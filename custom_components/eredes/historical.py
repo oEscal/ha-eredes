@@ -21,10 +21,12 @@ from homeassistant.components.recorder.statistics import (
 )
 from homeassistant.const import UnitOfEnergy
 from homeassistant.helpers.storage import Store
+from homeassistant.util.unit_conversion import EnergyConverter
 
 from .const import DOMAIN
 
 if TYPE_CHECKING:
+    from homeassistant.components.recorder.core import Recorder
     from homeassistant.core import HomeAssistant
 
     from .coordinator import ERedesCoordinator
@@ -42,7 +44,7 @@ TOTAL_HISTORY_DAYS = 365  # 1 year
 # version bump forces one successful full-window rebuild before append/resume
 # mode is allowed again. This repairs older partial imports without repeatedly
 # downloading a year of data on every Home Assistant restart.
-HISTORY_IMPORT_VERSION = 2
+HISTORY_IMPORT_VERSION = 3
 HISTORY_STORAGE_VERSION = 1
 HISTORY_STORAGE_KEY_PREFIX = f"{DOMAIN}.historical_import"
 
@@ -268,6 +270,91 @@ async def _async_fetch_history(
     ]
 
 
+async def _async_verify_statistics_import(
+    hass: HomeAssistant,
+    recorder: Recorder,
+    stat_id: str,
+    statistics: list[StatisticData],
+) -> bool:
+    """Wait for the recorder commit and verify the imported boundary rows."""
+    await recorder.async_block_till_done()
+
+    for expected in (statistics[0], statistics[-1]):
+        start = expected["start"]
+        persisted = await recorder.async_add_executor_job(
+            statistics_during_period,
+            hass,
+            start,
+            start + timedelta(hours=1),
+            {stat_id},
+            "hour",
+            None,
+            {"state", "sum"},
+        )
+        rows = persisted.get(stat_id, [])
+        if not rows:
+            _LOGGER.warning(
+                "Recorder did not persist expected statistics for %s at %s",
+                stat_id,
+                start.isoformat(),
+            )
+            return False
+
+        actual = rows[0]
+        if (
+            actual.get("state") != expected.get("state")
+            or actual.get("sum") != expected.get("sum")
+        ):
+            _LOGGER.warning(
+                "Recorder statistics verification failed for %s at %s: expected "
+                "state=%s sum=%s, got state=%s sum=%s",
+                stat_id,
+                start.isoformat(),
+                expected.get("state"),
+                expected.get("sum"),
+                actual.get("state"),
+                actual.get("sum"),
+            )
+            return False
+
+    return True
+
+
+async def _async_persist_statistics(
+    hass: HomeAssistant,
+    stat_id: str,
+    metadata: StatisticMetaData,
+    statistics: list[StatisticData],
+) -> bool:
+    """Queue, commit, and verify one statistics import."""
+    recorder = get_instance(hass)
+    try:
+        async_add_external_statistics(hass, metadata, statistics)
+        _LOGGER.debug(
+            "Queued %d hourly stats (%.3f kWh) for %s; waiting for recorder commit",
+            len(statistics),
+            statistics[-1]["sum"],
+            stat_id,
+        )
+        if not await _async_verify_statistics_import(
+            hass,
+            recorder,
+            stat_id,
+            statistics,
+        ):
+            return False
+    except Exception:
+        _LOGGER.exception("Failed to persist external statistics for %s", stat_id)
+        return False
+
+    _LOGGER.debug(
+        "Recorder committed and verified %d hourly stats for %s",
+        len(statistics),
+        stat_id,
+    )
+    return True
+
+
 async def async_import_historical_data(
     hass: HomeAssistant,
     coordinator: ERedesCoordinator,
@@ -326,22 +413,12 @@ async def async_import_historical_data(
         name=f"E-REDES Energy ({coordinator.cpe[-8:]})",
         source=DOMAIN,
         statistic_id=stat_id,
-        unit_class=None,
+        unit_class=EnergyConverter.UNIT_CLASS,
         unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
     )
 
-    try:
-        async_add_external_statistics(hass, metadata, statistics)
-    except Exception:
-        _LOGGER.exception("Failed to add external statistics for %s", stat_id)
+    if not await _async_persist_statistics(hass, stat_id, metadata, statistics):
         return False
-
-    _LOGGER.debug(
-        "Imported %d hourly stats (%.3f kWh) for %s",
-        len(statistics),
-        statistics[-1]["sum"],
-        stat_id,
-    )
 
     if plan.needs_full_import:
         await store.async_save({"version": HISTORY_IMPORT_VERSION})

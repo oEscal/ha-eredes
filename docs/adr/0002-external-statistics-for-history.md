@@ -3,6 +3,8 @@
 The one-year consumption backfill is written to Home Assistant long-term statistics
 under an **external** statistic id, `eredes:energy_<cpe suffix>` (source `eredes`), via
 `async_add_external_statistics` — not attached to the `sensor.…_daily_energy` entity.
+The statistic declares Home Assistant's `energy` unit class in addition to `kWh` and
+`has_sum=True`, so it is eligible for the Energy Dashboard's grid-consumption picker.
 
 ## Context
 
@@ -35,3 +37,9 @@ E-REDES status `-1002` (`result is empty`) is different: it means that no consum
 data exists for the requested period (for example, before the contract began), so the
 client returns an empty result and the historical importer continues with the next
 window.
+
+`async_add_external_statistics` only queues the recorder import; it does not mean the
+rows have been committed. The importer therefore waits for the recorder queue to
+commit and reads back the first and last generated hourly rows before marking a full
+history version complete. A missing or mismatched boundary row leaves the version
+marker unset so the repair is retried on the next setup.

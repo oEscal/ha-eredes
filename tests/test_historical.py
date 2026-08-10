@@ -14,6 +14,7 @@ from custom_components.eredes.historical import (
     HISTORY_IMPORT_VERSION,
     _aggregate_to_hourly_statistics,
     _async_fetch_history,
+    _async_verify_statistics_import,
     async_import_historical_data,
     statistic_id,
 )
@@ -69,6 +70,47 @@ def test_aggregate_seeds_cumulative_sum() -> None:
     stats = _aggregate_to_hourly_statistics(readings, initial_sum=10.0)
 
     assert [s["sum"] for s in stats] == [11.0, 12.0]
+
+
+@pytest.mark.asyncio
+async def test_statistics_import_waits_for_commit_and_verifies_boundaries() -> None:
+    """A queued import is only successful after recorder commit and read-back."""
+    stat_id = statistic_id(CPE)
+    statistics = _aggregate_to_hourly_statistics(
+        [_reading(0, 15, 1000.0), _reading(1, 15, 2000.0)]
+    )
+    recorder = MagicMock()
+    recorder.async_block_till_done = AsyncMock()
+    recorder.async_add_executor_job = AsyncMock(
+        side_effect=[
+            {stat_id: [{"state": 1.0, "sum": 1.0}]},
+            {stat_id: [{"state": 2.0, "sum": 3.0}]},
+        ]
+    )
+
+    verified = await _async_verify_statistics_import(
+        MagicMock(), recorder, stat_id, statistics
+    )
+
+    assert verified is True
+    recorder.async_block_till_done.assert_awaited_once_with()
+    assert recorder.async_add_executor_job.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_statistics_import_verification_rejects_missing_rows() -> None:
+    """A recorder job that commits no rows must not be considered successful."""
+    stat_id = statistic_id(CPE)
+    statistics = _aggregate_to_hourly_statistics([_reading(0, 15, 1000.0)])
+    recorder = MagicMock()
+    recorder.async_block_till_done = AsyncMock()
+    recorder.async_add_executor_job = AsyncMock(return_value={})
+
+    verified = await _async_verify_statistics_import(
+        MagicMock(), recorder, stat_id, statistics
+    )
+
+    assert verified is False
 
 
 def test_aggregate_skips_hours_at_or_before_cutoff() -> None:
@@ -133,15 +175,22 @@ async def test_partial_recent_history_triggers_full_year_repair() -> None:
     )
     stat_id = statistic_id(CPE)
 
+    statistics_query_count = 0
+
     async def executor_job(func, *_args):
+        nonlocal statistics_query_count
         if func.__name__ == "get_last_statistics":
             return {stat_id: [{"start": recent.timestamp(), "sum": 10.0}]}
         if func.__name__ == "statistics_during_period":
-            return {}
+            statistics_query_count += 1
+            if statistics_query_count == 1:
+                return {}
+            return {stat_id: [{"state": 1.0, "sum": 1.0}]}
         raise AssertionError(f"Unexpected recorder query: {func.__name__}")
 
     recorder = SimpleNamespace(
-        async_add_executor_job=AsyncMock(side_effect=executor_job)
+        async_add_executor_job=AsyncMock(side_effect=executor_job),
+        async_block_till_done=AsyncMock(),
     )
     store = MagicMock()
     store.async_load = AsyncMock(return_value=None)
@@ -167,11 +216,15 @@ async def test_partial_recent_history_triggers_full_year_repair() -> None:
             "custom_components.eredes.historical.get_instance", return_value=recorder
         ),
         patch("custom_components.eredes.historical.Store", return_value=store),
-        patch("custom_components.eredes.historical.async_add_external_statistics"),
+        patch(
+            "custom_components.eredes.historical.async_add_external_statistics"
+        ) as add_statistics,
     ):
         completed = await async_import_historical_data(MagicMock(), coordinator)
 
     assert completed is True
+    metadata = add_statistics.call_args.args[1]
+    assert metadata["unit_class"] == "energy"
     first_start = client.get_consumption.await_args_list[0].args[1]
     assert first_start <= now - timedelta(days=364)
     store.async_save.assert_awaited_once_with({"version": HISTORY_IMPORT_VERSION})
