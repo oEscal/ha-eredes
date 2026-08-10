@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from custom_components.eredes.eredes_api.client import ERedesClient
-from custom_components.eredes.eredes_api.exceptions import ERedesError
+from custom_components.eredes.eredes_api.exceptions import ERedesRequestRejectedError
 
 # A representative JWT-shaped token (base64url segments joined by dots).
 TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.abc-def_ghi"
@@ -86,16 +86,49 @@ def test_blank_cookie_yields_no_authorization_header() -> None:
     assert "Authorization-Request" not in headers
 
 
-def test_unsuccessful_api_body_raises_error() -> None:
-    """HTTP 200 with Body.Success=false must not masquerade as empty consumption."""
+def test_empty_result_response_yields_no_readings() -> None:
+    """E-REDES -1002 means the requested period has no consumption data."""
+    client = _make_client(TOKEN)
+    start = datetime(2025, 7, 10)
+    end = datetime(2025, 7, 11)
+
+    result = client._parse_consumption_response(
+        "PT0002000012345678AB",
+        {
+            "Header": {
+                "Status": {
+                    "ResponseCode": -1,
+                    "ResponseStatuses": {
+                        "ResponseStatus": [
+                            {"Code": "-1002", "Description": "result is empty"}
+                        ]
+                    },
+                }
+            },
+            "Body": {"Success": False, "Result": None},
+        },
+        start,
+        end,
+    )
+
+    assert result.readings == []
+
+
+def test_other_unsuccessful_api_body_raises_rejected_error_with_details() -> None:
+    """Other HTTP 200 rejections remain errors instead of creating silent gaps."""
     client = _make_client(TOKEN)
     start = datetime(2026, 1, 1)
     end = datetime(2026, 1, 2)
 
-    with pytest.raises(ERedesError, match="unsuccessful"):
+    with pytest.raises(ERedesRequestRejectedError, match="RANGE_TOO_LARGE"):
         client._parse_consumption_response(
             "PT0002000012345678AB",
-            {"Body": {"Success": False}},
+            {
+                "Body": {
+                    "Success": False,
+                    "Code": "RANGE_TOO_LARGE",
+                }
+            },
             start,
             end,
         )

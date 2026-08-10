@@ -11,3 +11,7 @@ class ERedesAuthenticationError(ERedesError):
 
 class ERedesConnectionError(ERedesError):
     """Exception raised when connection to E-REDES fails."""
+
+
+class ERedesRequestRejectedError(ERedesError):
+    """Exception raised when E-REDES returns HTTP 200 with ``Success=false``."""

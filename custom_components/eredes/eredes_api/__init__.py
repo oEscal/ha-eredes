@@ -5,6 +5,7 @@ from .exceptions import (
     ERedesAuthenticationError,
     ERedesConnectionError,
     ERedesError,
+    ERedesRequestRejectedError,
 )
 from .models import ConsumptionData, ConsumptionReading
 
@@ -15,4 +16,5 @@ __all__ = [
     "ERedesClient",
     "ERedesConnectionError",
     "ERedesError",
+    "ERedesRequestRejectedError",
 ]

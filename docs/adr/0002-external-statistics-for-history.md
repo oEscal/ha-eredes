@@ -29,5 +29,9 @@ sensor (see README). Normal updates seed the cumulative `sum` from the last impo
 hour and resume forward. Full-window imports are separately versioned: when the
 history-import version changes (or no successful marker exists), the integration
 re-fetches the complete one-year window and rewrites matching hourly rows while
-preserving the cumulative sum immediately before the window. A failed API chunk
-aborts the whole run, so partial backfills are never committed as successful.
+preserving the cumulative sum immediately before the window. A genuine failed API
+chunk aborts the whole run, so partial backfills are never committed as successful.
+E-REDES status `-1002` (`result is empty`) is different: it means that no consumption
+data exists for the requested period (for example, before the contract began), so the
+client returns an empty result and the historical importer continues with the next
+window.

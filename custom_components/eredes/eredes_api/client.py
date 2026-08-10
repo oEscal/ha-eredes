@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import UTC, datetime
@@ -9,7 +10,12 @@ from http.cookies import SimpleCookie
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from .exceptions import ERedesAuthenticationError, ERedesConnectionError, ERedesError
+from .exceptions import (
+    ERedesAuthenticationError,
+    ERedesConnectionError,
+    ERedesError,
+    ERedesRequestRejectedError,
+)
 from .models import ConsumptionData, ConsumptionReading
 
 if TYPE_CHECKING:
@@ -266,20 +272,57 @@ class ERedesClient:
         try:
             body = data.get("Body", {})
             if not body.get("Success", False):
-                # The portal can return HTTP 200 even when the request itself
-                # failed. Treat that as an API error rather than valid empty
-                # consumption; otherwise historical imports can silently commit
-                # incomplete windows and never retry the missing period.
-                detail = (
-                    body.get("Message")
-                    or body.get("Error")
-                    or data.get("Message")
-                    or data.get("Error")
+                # E-REDES reports a valid empty period as HTTP 200 with
+                # Body.Success=false and Header status -1002/result is empty.
+                # This commonly happens before the customer's contract began,
+                # so it must behave like an empty result rather than aborting a
+                # multi-month historical import.
+                status = data.get("Header", {}).get("Status", {})
+                response_statuses = status.get("ResponseStatuses", {}).get(
+                    "ResponseStatus", []
                 )
+                if isinstance(response_statuses, dict):
+                    response_statuses = [response_statuses]
+                if any(
+                    isinstance(item, dict)
+                    and (
+                        str(item.get("Code", "")) == "-1002"
+                        or str(item.get("Description", "")).lower()
+                        == "result is empty"
+                    )
+                    for item in response_statuses
+                ):
+                    _LOGGER.debug("API returned no readings for requested period")
+                    return ConsumptionData(
+                        cpe=cpe,
+                        readings=[],
+                        start_date=start_date,
+                        end_date=end_date,
+                    )
+
+                # Other HTTP-200 rejections are genuine API errors. Keep their
+                # metadata in the exception so callers do not silently create
+                # gaps in historical data.
+                detail = {
+                    key: value
+                    for key, value in body.items()
+                    if key not in {"Success", "Result"}
+                }
+                if not detail:
+                    detail = {
+                        key: value for key, value in data.items() if key != "Body"
+                    }
+
                 message = "API returned unsuccessful response"
                 if detail:
-                    message = f"{message}: {detail}"
-                raise ERedesError(message)
+                    serialized = json.dumps(
+                        detail,
+                        ensure_ascii=False,
+                        default=str,
+                        sort_keys=True,
+                    )
+                    message = f"{message}: {serialized[:1000]}"
+                raise ERedesRequestRejectedError(message)
 
             result = body.get("Result", {})
             devices = result.get("utilitiesDevices", [])
