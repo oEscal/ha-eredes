@@ -46,13 +46,23 @@
         "title": "E-REDES Options",
         "description": "Configure when the Energy Dashboard history is synchronized with E-REDES.",
         "data": {
+          "history_sync_frequency": "History synchronization frequency",
           "history_sync_time": "History synchronization time",
-          "history_sync_interval_days": "History synchronization frequency"
+          "history_sync_interval_days": "Day interval"
         },
         "data_description": {
-          "history_sync_time": "Local Home Assistant time at which the synchronization check runs.",
-          "history_sync_interval_days": "Number of days between successful Energy Dashboard history synchronizations."
+          "history_sync_frequency": "Synchronize hourly or after a configurable number of days.",
+          "history_sync_time": "For day-based schedules, the exact local Home Assistant time. For hourly schedules, the minute and second are used for every hour.",
+          "history_sync_interval_days": "Number of days between successful synchronizations when using the day-based frequency."
         }
+      }
+    }
+  },
+  "selector": {
+    "history_sync_frequency": {
+      "options": {
+        "hourly": "Hourly",
+        "days": "Every N days"
       }
     }
   },

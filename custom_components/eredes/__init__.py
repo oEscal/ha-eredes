@@ -14,10 +14,13 @@ from homeassistant.helpers.event import async_track_time_change
 
 from .const import (
     CONF_ACCESS_TOKEN,
+    CONF_HISTORY_SYNC_FREQUENCY,
     CONF_HISTORY_SYNC_INTERVAL_DAYS,
     CONF_HISTORY_SYNC_TIME,
+    DEFAULT_HISTORY_SYNC_FREQUENCY,
     DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
     DEFAULT_HISTORY_SYNC_TIME,
+    HISTORY_SYNC_FREQUENCY_HOURLY,
     LEGACY_TOKEN_KEYS,
 )
 from .coordinator import ERedesCoordinator
@@ -70,15 +73,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ERedesConfigEntry) -> bo
     sync_time = time.fromisoformat(
         str(entry.options.get(CONF_HISTORY_SYNC_TIME, DEFAULT_HISTORY_SYNC_TIME))
     )
-    entry.async_on_unload(
-        async_track_time_change(
+    sync_frequency = str(
+        entry.options.get(CONF_HISTORY_SYNC_FREQUENCY, DEFAULT_HISTORY_SYNC_FREQUENCY)
+    )
+    if sync_frequency == HISTORY_SYNC_FREQUENCY_HOURLY:
+        remove_history_schedule = async_track_time_change(
+            hass,
+            lambda now: _handle_hourly_history_sync(hass, entry, now),
+            minute=sync_time.minute,
+            second=sync_time.second,
+        )
+    else:
+        remove_history_schedule = async_track_time_change(
             hass,
             lambda now: _handle_daily_history_sync(hass, entry, now),
             hour=sync_time.hour,
             minute=sync_time.minute,
             second=sync_time.second,
         )
-    )
+    entry.async_on_unload(remove_history_schedule)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     return True
@@ -128,6 +141,17 @@ def _start_historical_import(
         _async_import_historical_data(hass, entry, entry.runtime_data.coordinator),
         name="eredes_historical_import",
     )
+
+
+@callback
+def _handle_hourly_history_sync(
+    hass: HomeAssistant,
+    entry: ERedesConfigEntry,
+    _now: datetime,
+) -> None:
+    """Start the hourly history synchronization."""
+    _LOGGER.debug("Starting scheduled hourly historical data synchronization")
+    _start_historical_import(hass, entry)
 
 
 @callback

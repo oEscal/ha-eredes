@@ -29,8 +29,10 @@ landed.
 The Energy Dashboard consumption source is the `eredes:energy_…` statistic, not the
 sensor (see README). History is synchronized once during integration setup and then
 on a user-configurable schedule. The default is every day at 05:00 in Home
-Assistant's local time; users can choose the local clock time and an interval of 1–30
-days from the integration options. Normal incremental updates seed the cumulative
+Assistant's local time; users can choose either hourly synchronization or an interval
+of 1–30 days from the integration options. Day-based schedules use the configured
+local clock time. Hourly schedules use the configured minute and second in every hour
+(e.g. `05:30` means `:30` every hour). Normal incremental updates seed the cumulative
 `sum` from the last imported hour and resume forward. Full-window imports
 are separately versioned: when the history-import version changes (or no successful
 marker exists), the integration

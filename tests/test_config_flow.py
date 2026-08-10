@@ -11,11 +11,14 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.eredes.const import (
     CONF_CPE,
+    CONF_HISTORY_SYNC_FREQUENCY,
     CONF_HISTORY_SYNC_INTERVAL_DAYS,
     CONF_HISTORY_SYNC_TIME,
+    DEFAULT_HISTORY_SYNC_FREQUENCY,
     DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
     DEFAULT_HISTORY_SYNC_TIME,
     DOMAIN,
+    HISTORY_SYNC_FREQUENCY_HOURLY,
 )
 from custom_components.eredes.eredes_api import (
     ERedesAuthenticationError,
@@ -160,6 +163,7 @@ async def test_options_flow_configures_history_schedule(
     schema = result["data_schema"]
     defaults = {key.schema: key.default() for key in schema.schema}
     assert defaults == {
+        CONF_HISTORY_SYNC_FREQUENCY: DEFAULT_HISTORY_SYNC_FREQUENCY,
         CONF_HISTORY_SYNC_TIME: DEFAULT_HISTORY_SYNC_TIME,
         CONF_HISTORY_SYNC_INTERVAL_DAYS: DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
     }
@@ -167,6 +171,7 @@ async def test_options_flow_configures_history_schedule(
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
+            CONF_HISTORY_SYNC_FREQUENCY: HISTORY_SYNC_FREQUENCY_HOURLY,
             CONF_HISTORY_SYNC_TIME: "03:30:00",
             CONF_HISTORY_SYNC_INTERVAL_DAYS: 3,
         },
@@ -174,6 +179,7 @@ async def test_options_flow_configures_history_schedule(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"] == {
+        CONF_HISTORY_SYNC_FREQUENCY: HISTORY_SYNC_FREQUENCY_HOURLY,
         CONF_HISTORY_SYNC_TIME: "03:30:00",
         CONF_HISTORY_SYNC_INTERVAL_DAYS: 3,
     }

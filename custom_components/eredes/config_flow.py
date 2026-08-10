@@ -18,6 +18,9 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TimeSelector,
 )
 
@@ -25,11 +28,15 @@ from .const import (
     BASE_URL,
     CONF_ACCESS_TOKEN,
     CONF_CPE,
+    CONF_HISTORY_SYNC_FREQUENCY,
     CONF_HISTORY_SYNC_INTERVAL_DAYS,
     CONF_HISTORY_SYNC_TIME,
+    DEFAULT_HISTORY_SYNC_FREQUENCY,
     DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
     DEFAULT_HISTORY_SYNC_TIME,
     DOMAIN,
+    HISTORY_SYNC_FREQUENCY_DAYS,
+    HISTORY_SYNC_FREQUENCY_HOURLY,
     MAX_HISTORY_SYNC_INTERVAL_DAYS,
     MIN_HISTORY_SYNC_INTERVAL_DAYS,
 )
@@ -223,6 +230,22 @@ class ERedesOptionsFlow(OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(
                 {
+                    vol.Required(
+                        CONF_HISTORY_SYNC_FREQUENCY,
+                        default=self.config_entry.options.get(
+                            CONF_HISTORY_SYNC_FREQUENCY,
+                            DEFAULT_HISTORY_SYNC_FREQUENCY,
+                        ),
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                HISTORY_SYNC_FREQUENCY_HOURLY,
+                                HISTORY_SYNC_FREQUENCY_DAYS,
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                            translation_key=CONF_HISTORY_SYNC_FREQUENCY,
+                        )
+                    ),
                     vol.Required(
                         CONF_HISTORY_SYNC_TIME,
                         default=self.config_entry.options.get(

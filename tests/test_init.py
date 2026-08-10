@@ -12,9 +12,11 @@ from custom_components.eredes import async_migrate_entry, async_setup_entry
 from custom_components.eredes.const import (
     CONF_ACCESS_TOKEN,
     CONF_CPE,
+    CONF_HISTORY_SYNC_FREQUENCY,
     CONF_HISTORY_SYNC_INTERVAL_DAYS,
     CONF_HISTORY_SYNC_TIME,
     DOMAIN,
+    HISTORY_SYNC_FREQUENCY_HOURLY,
 )
 
 if TYPE_CHECKING:
@@ -85,6 +87,57 @@ async def test_setup_runs_history_in_background_and_schedules_daily_5am(
         daily_callback(MagicMock())
         assert create_background_task_mock.call_count == 2
         assert len(created_coroutines) == 2
+
+
+async def test_setup_uses_hourly_history_frequency(
+    hass: HomeAssistant,
+) -> None:
+    """Hourly mode synchronizes at the configured minute of every hour."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        data={CONF_ACCESS_TOKEN: TOKEN, CONF_CPE: CPE},
+        options={
+            CONF_HISTORY_SYNC_FREQUENCY: HISTORY_SYNC_FREQUENCY_HOURLY,
+            CONF_HISTORY_SYNC_TIME: "03:30:00",
+            CONF_HISTORY_SYNC_INTERVAL_DAYS: 3,
+        },
+        unique_id=CPE,
+    )
+    entry.add_to_hass(hass)
+
+    coordinator = MagicMock()
+    coordinator.cpe = CPE
+    coordinator.client = MagicMock()
+    coordinator.async_config_entry_first_refresh = AsyncMock()
+    background_task = MagicMock()
+    background_task.done.return_value = True
+
+    def create_background_task(_hass, target, *, name: str):
+        del name
+        target.close()
+        return background_task
+
+    with (
+        patch("custom_components.eredes.ERedesCoordinator", return_value=coordinator),
+        patch.object(hass.config_entries, "async_forward_entry_setups", AsyncMock()),
+        patch.object(
+            entry,
+            "async_create_background_task",
+            side_effect=create_background_task,
+        ) as create_background_task_mock,
+        patch("custom_components.eredes.async_track_time_change") as track_time_change,
+    ):
+        assert await async_setup_entry(hass, entry) is True
+
+        assert track_time_change.call_args.kwargs == {
+            "minute": 30,
+            "second": 0,
+        }
+        hourly_callback = track_time_change.call_args.args[1]
+        hourly_callback(MagicMock())
+        hourly_callback(MagicMock())
+        assert create_background_task_mock.call_count == 3
 
 
 async def test_setup_uses_configured_history_schedule_and_frequency(

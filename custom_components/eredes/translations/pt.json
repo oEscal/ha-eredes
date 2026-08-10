@@ -46,13 +46,23 @@
         "title": "Opcoes E-REDES",
         "description": "Configure quando o historico do painel de Energia e sincronizado com a E-REDES.",
         "data": {
+          "history_sync_frequency": "Frequencia de sincronizacao do historico",
           "history_sync_time": "Hora de sincronizacao do historico",
-          "history_sync_interval_days": "Frequencia de sincronizacao do historico"
+          "history_sync_interval_days": "Intervalo em dias"
         },
         "data_description": {
-          "history_sync_time": "Hora local do Home Assistant em que e efetuada a verificacao de sincronizacao.",
-          "history_sync_interval_days": "Numero de dias entre sincronizacoes bem sucedidas do historico do painel de Energia."
+          "history_sync_frequency": "Sincronize de hora a hora ou apos um numero configuravel de dias.",
+          "history_sync_time": "Para agendamentos em dias, e a hora local exata do Home Assistant. Para agendamentos horarios, sao usados os minutos e segundos em cada hora.",
+          "history_sync_interval_days": "Numero de dias entre sincronizacoes bem sucedidas quando e usada a frequencia baseada em dias."
         }
+      }
+    }
+  },
+  "selector": {
+    "history_sync_frequency": {
+      "options": {
+        "hourly": "De hora a hora",
+        "days": "A cada N dias"
       }
     }
   },

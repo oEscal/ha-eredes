@@ -7,6 +7,7 @@ DOMAIN: Final = "eredes"
 # Configuration keys
 CONF_CPE: Final = "cpe"
 CONF_ACCESS_TOKEN: Final = "access_token"
+CONF_HISTORY_SYNC_FREQUENCY: Final = "history_sync_frequency"
 CONF_HISTORY_SYNC_TIME: Final = "history_sync_time"
 CONF_HISTORY_SYNC_INTERVAL_DAYS: Final = "history_sync_interval_days"
 
@@ -19,6 +20,9 @@ API_URL: Final = f"{BASE_URL}/ms/reading/data-usage/edm/get"
 
 # Timing
 DEFAULT_SCAN_INTERVAL: Final = 3600  # 1 hour in seconds
+HISTORY_SYNC_FREQUENCY_HOURLY: Final = "hourly"
+HISTORY_SYNC_FREQUENCY_DAYS: Final = "days"
+DEFAULT_HISTORY_SYNC_FREQUENCY: Final = HISTORY_SYNC_FREQUENCY_DAYS
 DEFAULT_HISTORY_SYNC_TIME: Final = "05:00:00"
 DEFAULT_HISTORY_SYNC_INTERVAL_DAYS: Final = 1
 MIN_HISTORY_SYNC_INTERVAL_DAYS: Final = 1
