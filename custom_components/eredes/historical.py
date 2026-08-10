@@ -44,7 +44,7 @@ TOTAL_HISTORY_DAYS = 365  # 1 year
 # version bump forces one successful full-window rebuild before append/resume
 # mode is allowed again. This repairs older partial imports without repeatedly
 # downloading a year of data on every Home Assistant restart.
-HISTORY_IMPORT_VERSION = 3
+HISTORY_IMPORT_VERSION = 4
 HISTORY_STORAGE_VERSION = 1
 HISTORY_STORAGE_KEY_PREFIX = f"{DOMAIN}.historical_import"
 
@@ -112,26 +112,11 @@ async def _async_build_import_plan(
         second=0,
         microsecond=0,
     )
-    full_start_utc = full_start_local.replace(tzinfo=LISBON).astimezone(UTC)
     needs_full_import = not full_import_current or not (
         last_stats and stat_id in last_stats and last_stats[stat_id]
     )
 
     if needs_full_import:
-        baseline_stats = await recorder.async_add_executor_job(
-            statistics_during_period,
-            hass,
-            full_start_utc - timedelta(hours=1),
-            full_start_utc,
-            {stat_id},
-            "hour",
-            None,
-            {"sum"},
-        )
-        baseline_rows = baseline_stats.get(stat_id, [])
-        initial_sum = 0.0
-        if baseline_rows:
-            initial_sum = baseline_rows[-1].get("sum") or 0.0
         _LOGGER.debug(
             "Importing full history window from %s (history import version %d)",
             full_start_local.isoformat(),
@@ -141,7 +126,7 @@ async def _async_build_import_plan(
             _HistoryImportPlan(
                 start_date=full_start_local,
                 end_date=now_local,
-                initial_sum=initial_sum,
+                initial_sum=0.0,
                 after=None,
                 needs_full_import=True,
             ),
@@ -325,10 +310,14 @@ async def _async_persist_statistics(
     stat_id: str,
     metadata: StatisticMetaData,
     statistics: list[StatisticData],
+    *,
+    replace_existing: bool = False,
 ) -> bool:
     """Queue, commit, and verify one statistics import."""
     recorder = get_instance(hass)
     try:
+        if replace_existing:
+            recorder.async_clear_statistics([stat_id])
         async_add_external_statistics(hass, metadata, statistics)
         _LOGGER.debug(
             "Queued %d hourly stats (%.3f kWh) for %s; waiting for recorder commit",
@@ -394,8 +383,8 @@ async def async_import_historical_data(
     all_readings.sort(key=lambda r: r.timestamp)
 
     # On a full rebuild `plan.after` is None and all rows in the year are
-    # regenerated. Home Assistant updates existing external-statistics rows at
-    # matching timestamps, repairing partial imports and cumulative sums.
+    # regenerated. Persistence replaces the old external statistic entirely so
+    # obsolete rows from older timestamp semantics cannot survive the repair.
     statistics = _aggregate_to_hourly_statistics(
         all_readings,
         plan.initial_sum,
@@ -417,7 +406,13 @@ async def async_import_historical_data(
         unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
     )
 
-    if not await _async_persist_statistics(hass, stat_id, metadata, statistics):
+    if not await _async_persist_statistics(
+        hass,
+        stat_id,
+        metadata,
+        statistics,
+        replace_existing=plan.needs_full_import,
+    ):
         return False
 
     if plan.needs_full_import:

@@ -35,10 +35,15 @@ local clock time. Hourly schedules use the configured minute and second in every
 (e.g. `05:30` means `:30` every hour). Normal incremental updates seed the cumulative
 `sum` from the last imported hour and resume forward. Full-window imports
 are separately versioned: when the history-import version changes (or no successful
-marker exists), the integration
-re-fetches the complete one-year window and rewrites matching hourly rows while
-preserving the cumulative sum immediately before the window. A genuine failed API
-chunk aborts the whole run, so partial backfills are never committed as successful.
+marker exists), the integration re-fetches the complete one-year window. Only after
+all API chunks have been fetched and aggregated does it clear the existing external
+statistic and rebuild the one-year series from a zero cumulative baseline. Replacing
+the statistic, rather than only upserting matching timestamps, is required because a
+change in timestamp semantics can otherwise leave obsolete rows outside the rebuilt
+tail. Such a stale row can make Home Assistant calculate a large negative hourly
+energy change from adjacent cumulative sums. A genuine failed API chunk aborts the
+run before the statistic is cleared, so incomplete API backfills are never committed
+as successful.
 E-REDES status `-1002` (`result is empty`) is different: it means that no consumption
 data exists for the requested period (for example, before the contract began), so the
 client returns an empty result and the historical importer continues with the next
@@ -52,7 +57,9 @@ marker unset so the repair is retried on a subsequent scheduled synchronization 
 setup. The configured frequency counts successful synchronizations; a failed run does
 not reset the interval counter.
 
-The history-import version is independent from the integration version. It should be
+History import version 4 introduced full replacement of the external statistic to
+repair stale rows left by the earlier UTC-to-Lisbon timestamp correction. The
+history-import version is independent from the integration version. It should be
 incremented only when a code change requires already-stored historical statistics to
 be regenerated; ordinary integration updates must leave it unchanged to avoid an
 unnecessary one-year backfill for every user.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -175,22 +176,17 @@ async def test_partial_recent_history_triggers_full_year_repair() -> None:
     )
     stat_id = statistic_id(CPE)
 
-    statistics_query_count = 0
-
     async def executor_job(func, *_args):
-        nonlocal statistics_query_count
         if func.__name__ == "get_last_statistics":
             return {stat_id: [{"start": recent.timestamp(), "sum": 10.0}]}
         if func.__name__ == "statistics_during_period":
-            statistics_query_count += 1
-            if statistics_query_count == 1:
-                return {}
             return {stat_id: [{"state": 1.0, "sum": 1.0}]}
         raise AssertionError(f"Unexpected recorder query: {func.__name__}")
 
     recorder = SimpleNamespace(
         async_add_executor_job=AsyncMock(side_effect=executor_job),
         async_block_till_done=AsyncMock(),
+        async_clear_statistics=MagicMock(),
     )
     store = MagicMock()
     store.async_load = AsyncMock(return_value=None)
@@ -268,6 +264,82 @@ async def test_current_history_version_resumes_from_latest_statistic() -> None:
     first_start = client.get_consumption.await_args_list[0].args[1]
     assert first_start >= now - timedelta(days=3)
     store.async_save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_full_repair_removes_stale_shifted_tail_row() -> None:
+    """A versioned repair must not leave an obsolete row after the rebuilt tail."""
+    stat_id = statistic_id(CPE)
+    corrected_start = datetime(2026, 8, 9, 22, 0, tzinfo=UTC)
+    stale_start = corrected_start + timedelta(hours=1)
+
+    # This models the exact failure seen after the Lisbon timestamp repair: the
+    # corrected last row has a larger cumulative sum, while an obsolete row from
+    # the old UTC interpretation survives one hour later. Home Assistant computes
+    # the displayed hourly change as current_sum - previous_sum, yielding
+    # 1023.243 - 1300.0 == -276.757 kWh at the stale row.
+    persisted: dict[datetime, dict[str, float]] = {
+        stale_start: {"state": 0.5, "sum": 1023.243},
+    }
+
+    async def executor_job(func, *_args):
+        if func.__name__ == "get_last_statistics":
+            return {
+                stat_id: [
+                    {"start": stale_start.timestamp(), "sum": 1023.243}
+                ]
+            }
+        if func.__name__ == "statistics_during_period":
+            start = _args[1]
+            if start in persisted:
+                return {stat_id: [persisted[start]]}
+            # Seed the pre-repair series so the current implementation rebuilds
+            # the corrected tail to exactly 1300.0 kWh.
+            return {stat_id: [{"sum": 1299.0}]}
+        raise AssertionError(f"Unexpected recorder query: {func.__name__}")
+
+    recorder = SimpleNamespace(
+        async_add_executor_job=AsyncMock(side_effect=executor_job),
+        async_block_till_done=AsyncMock(),
+        async_clear_statistics=MagicMock(side_effect=lambda _ids: persisted.clear()),
+    )
+    store = MagicMock()
+    store.async_load = AsyncMock(
+        return_value={"version": HISTORY_IMPORT_VERSION - 1}
+    )
+    store.async_save = AsyncMock()
+    coordinator = SimpleNamespace(cpe=CPE, client=MagicMock())
+    corrected_reading = ConsumptionReading(
+        timestamp=corrected_start + timedelta(minutes=15),
+        value_wh=1000.0,
+    )
+
+    def add_statistics(_hass, _metadata, statistics):
+        for statistic in statistics:
+            persisted[statistic["start"]] = {
+                "state": statistic["state"],
+                "sum": statistic["sum"],
+            }
+
+    with (
+        patch(
+            "custom_components.eredes.historical.get_instance", return_value=recorder
+        ),
+        patch("custom_components.eredes.historical.Store", return_value=store),
+        patch(
+            "custom_components.eredes.historical._async_fetch_history",
+            AsyncMock(return_value=[corrected_reading]),
+        ),
+        patch(
+            "custom_components.eredes.historical.async_add_external_statistics",
+            side_effect=add_statistics,
+        ),
+    ):
+        completed = await async_import_historical_data(MagicMock(), coordinator)
+
+    assert completed is True
+    ordered_sums = [persisted[start]["sum"] for start in sorted(persisted)]
+    assert all(current >= previous for previous, current in pairwise(ordered_sums))
 
 
 @pytest.mark.asyncio
