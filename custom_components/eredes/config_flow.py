@@ -14,8 +14,25 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    TimeSelector,
+)
 
-from .const import BASE_URL, CONF_ACCESS_TOKEN, CONF_CPE, DOMAIN
+from .const import (
+    BASE_URL,
+    CONF_ACCESS_TOKEN,
+    CONF_CPE,
+    CONF_HISTORY_SYNC_INTERVAL_DAYS,
+    CONF_HISTORY_SYNC_TIME,
+    DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
+    DEFAULT_HISTORY_SYNC_TIME,
+    DOMAIN,
+    MAX_HISTORY_SYNC_INTERVAL_DAYS,
+    MIN_HISTORY_SYNC_INTERVAL_DAYS,
+)
 from .eredes_api import ERedesAuthenticationError, ERedesClient, ERedesConnectionError
 
 _LOGGER = logging.getLogger(__name__)
@@ -196,8 +213,37 @@ class ERedesOptionsFlow(OptionsFlow):
     """Handle E-REDES options."""
 
     async def async_step_init(
-        self, _user_input: dict[str, Any] | None = None
+        self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the options."""
-        # Currently no options, but this allows future expansion
-        return self.async_abort(reason="no_options")
+        """Manage the history synchronization schedule."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_HISTORY_SYNC_TIME,
+                        default=self.config_entry.options.get(
+                            CONF_HISTORY_SYNC_TIME, DEFAULT_HISTORY_SYNC_TIME
+                        ),
+                    ): TimeSelector(),
+                    vol.Required(
+                        CONF_HISTORY_SYNC_INTERVAL_DAYS,
+                        default=self.config_entry.options.get(
+                            CONF_HISTORY_SYNC_INTERVAL_DAYS,
+                            DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=MIN_HISTORY_SYNC_INTERVAL_DAYS,
+                            max=MAX_HISTORY_SYNC_INTERVAL_DAYS,
+                            step=1,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="days",
+                        )
+                    ),
+                }
+            ),
+        )

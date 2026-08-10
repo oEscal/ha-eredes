@@ -43,11 +43,17 @@
   "options": {
     "step": {
       "init": {
-        "title": "E-REDES Options"
+        "title": "E-REDES Options",
+        "description": "Configure when the Energy Dashboard history is synchronized with E-REDES.",
+        "data": {
+          "history_sync_time": "History synchronization time",
+          "history_sync_interval_days": "History synchronization frequency"
+        },
+        "data_description": {
+          "history_sync_time": "Local Home Assistant time at which the synchronization check runs.",
+          "history_sync_interval_days": "Number of days between successful Energy Dashboard history synchronizations."
+        }
       }
-    },
-    "abort": {
-      "no_options": "No options available for this integration"
     }
   },
   "entity": {

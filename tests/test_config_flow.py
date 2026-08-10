@@ -9,7 +9,14 @@ from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.eredes.const import CONF_CPE, DOMAIN
+from custom_components.eredes.const import (
+    CONF_CPE,
+    CONF_HISTORY_SYNC_INTERVAL_DAYS,
+    CONF_HISTORY_SYNC_TIME,
+    DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
+    DEFAULT_HISTORY_SYNC_TIME,
+    DOMAIN,
+)
 from custom_components.eredes.eredes_api import (
     ERedesAuthenticationError,
     ERedesConnectionError,
@@ -132,6 +139,44 @@ async def test_form_user_cannot_connect(
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "cannot_connect"}
+
+
+async def test_options_flow_configures_history_schedule(
+    hass: HomeAssistant,
+    mock_config_entry_data: dict,
+) -> None:
+    """Users can configure history synchronization time and frequency."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_config_entry_data,
+        unique_id=mock_config_entry_data[CONF_CPE],
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+    schema = result["data_schema"]
+    defaults = {key.schema: key.default() for key in schema.schema}
+    assert defaults == {
+        CONF_HISTORY_SYNC_TIME: DEFAULT_HISTORY_SYNC_TIME,
+        CONF_HISTORY_SYNC_INTERVAL_DAYS: DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
+    }
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_HISTORY_SYNC_TIME: "03:30:00",
+            CONF_HISTORY_SYNC_INTERVAL_DAYS: 3,
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {
+        CONF_HISTORY_SYNC_TIME: "03:30:00",
+        CONF_HISTORY_SYNC_INTERVAL_DAYS: 3,
+    }
 
 
 async def test_form_already_configured(

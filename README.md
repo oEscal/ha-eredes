@@ -79,9 +79,10 @@ API chunk succeeds; failed runs write no partial history and are retried later. 
 backfill format is versioned so upgrades can force a one-time repair of previously
 incomplete history. On normal later restarts the integration resumes from the last
 imported hour rather than re-importing the whole year. The same incremental history
-synchronization runs every day at **05:00 in Home Assistant's local time**, so the
-Energy Dashboard statistic remains current without requiring a restart or reload.
-Add that statistic to your Energy Dashboard:
+synchronization runs on a configurable schedule so the Energy Dashboard statistic
+remains current without requiring a restart or reload. The default is **every day at
+05:00 in Home Assistant's local time**; both the time and frequency can be changed
+from the integration's **Configure** options. Add that statistic to your Energy Dashboard:
 
 1. Go to **Settings** > **Dashboards** > **Energy**
 2. Under "Grid consumption", click **Add consumption**

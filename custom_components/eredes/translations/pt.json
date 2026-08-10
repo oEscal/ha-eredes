@@ -43,11 +43,17 @@
   "options": {
     "step": {
       "init": {
-        "title": "Opcoes E-REDES"
+        "title": "Opcoes E-REDES",
+        "description": "Configure quando o historico do painel de Energia e sincronizado com a E-REDES.",
+        "data": {
+          "history_sync_time": "Hora de sincronizacao do historico",
+          "history_sync_interval_days": "Frequencia de sincronizacao do historico"
+        },
+        "data_description": {
+          "history_sync_time": "Hora local do Home Assistant em que e efetuada a verificacao de sincronizacao.",
+          "history_sync_interval_days": "Numero de dias entre sincronizacoes bem sucedidas do historico do painel de Energia."
+        }
       }
-    },
-    "abort": {
-      "no_options": "Nao existem opcoes disponiveis para esta integracao"
     }
   },
   "entity": {

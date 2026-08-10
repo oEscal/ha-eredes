@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import time
 from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
@@ -11,7 +12,14 @@ from homeassistant.const import Platform
 from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_time_change
 
-from .const import CONF_ACCESS_TOKEN, HISTORY_SYNC_HOUR, LEGACY_TOKEN_KEYS
+from .const import (
+    CONF_ACCESS_TOKEN,
+    CONF_HISTORY_SYNC_INTERVAL_DAYS,
+    CONF_HISTORY_SYNC_TIME,
+    DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
+    DEFAULT_HISTORY_SYNC_TIME,
+    LEGACY_TOKEN_KEYS,
+)
 from .coordinator import ERedesCoordinator
 
 if TYPE_CHECKING:
@@ -34,6 +42,7 @@ class ERedesData:
     coordinator: ERedesCoordinator
     client: ERedesClient
     historical_import_task: asyncio.Task[None] | None = None
+    history_sync_days_elapsed: int = 0
 
 
 type ERedesConfigEntry = ConfigEntry[ERedesData]
@@ -56,17 +65,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ERedesConfigEntry) -> bo
     # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Synchronize history once at setup, then every day at 05:00 local HA time.
+    # Synchronize once at setup, then on the user-configured local schedule.
     _start_historical_import(hass, entry)
+    sync_time = time.fromisoformat(
+        str(entry.options.get(CONF_HISTORY_SYNC_TIME, DEFAULT_HISTORY_SYNC_TIME))
+    )
     entry.async_on_unload(
         async_track_time_change(
             hass,
             lambda now: _handle_daily_history_sync(hass, entry, now),
-            hour=HISTORY_SYNC_HOUR,
-            minute=0,
-            second=0,
+            hour=sync_time.hour,
+            minute=sync_time.minute,
+            second=sync_time.second,
         )
     )
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     return True
 
@@ -123,8 +136,26 @@ def _handle_daily_history_sync(
     entry: ERedesConfigEntry,
     _now: datetime,
 ) -> None:
-    """Start the scheduled daily history synchronization."""
-    _LOGGER.debug("Starting scheduled 05:00 historical data synchronization")
+    """Run history synchronization when the configured day interval elapses."""
+    interval_days = int(
+        entry.options.get(
+            CONF_HISTORY_SYNC_INTERVAL_DAYS,
+            DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
+        )
+    )
+    entry.runtime_data.history_sync_days_elapsed += 1
+    if entry.runtime_data.history_sync_days_elapsed < interval_days:
+        _LOGGER.debug(
+            "Skipping scheduled historical data synchronization (%d/%d days)",
+            entry.runtime_data.history_sync_days_elapsed,
+            interval_days,
+        )
+        return
+
+    _LOGGER.debug(
+        "Starting scheduled historical data synchronization after %d day(s)",
+        interval_days,
+    )
     _start_historical_import(hass, entry)
 
 
@@ -140,6 +171,7 @@ async def _async_import_historical_data(
     try:
         completed = await async_import_historical_data(hass, coordinator)
         if completed:
+            _entry.runtime_data.history_sync_days_elapsed = 0
             _LOGGER.debug("Historical data import completed")
         else:
             _LOGGER.warning(
@@ -148,3 +180,11 @@ async def _async_import_historical_data(
             )
     except Exception:
         _LOGGER.exception("Failed to import historical data")
+
+
+async def _async_options_updated(
+    hass: HomeAssistant,
+    entry: ERedesConfigEntry,
+) -> None:
+    """Reload the entry so changed synchronization options take effect."""
+    await hass.config_entries.async_reload(entry.entry_id)
