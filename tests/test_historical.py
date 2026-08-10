@@ -11,7 +11,9 @@ from homeassistant.components.recorder.statistics import valid_statistic_id
 
 from custom_components.eredes.eredes_api.models import ConsumptionReading
 from custom_components.eredes.historical import (
+    HISTORY_IMPORT_VERSION,
     _aggregate_to_hourly_statistics,
+    _async_fetch_history,
     async_import_historical_data,
     statistic_id,
 )
@@ -39,15 +41,15 @@ def test_statistic_id_is_valid_external_id() -> None:
     assert valid_statistic_id(stat_id)
 
 
-def test_aggregate_buckets_by_utc_hour() -> None:
-    """15-minute readings roll up into cumulative, top-of-hour UTC statistics."""
+def test_aggregate_buckets_interval_end_timestamps_by_consumption_hour() -> None:
+    """Quarter-hour timestamps mark interval ends, including the top of next hour."""
     readings = [
-        _reading(0, 0, 250.0),
         _reading(0, 15, 250.0),
         _reading(0, 30, 250.0),
-        _reading(0, 45, 250.0),  # hour 0 -> 1.0 kWh
-        _reading(1, 0, 500.0),
-        _reading(1, 30, 500.0),  # hour 1 -> 1.0 kWh
+        _reading(0, 45, 250.0),
+        _reading(1, 0, 250.0),  # final quarter of hour 0 -> 1.0 kWh total
+        _reading(1, 15, 500.0),
+        _reading(1, 30, 500.0),  # first half of hour 1 -> 1.0 kWh
     ]
 
     stats = _aggregate_to_hourly_statistics(readings)
@@ -71,7 +73,11 @@ def test_aggregate_seeds_cumulative_sum() -> None:
 
 def test_aggregate_skips_hours_at_or_before_cutoff() -> None:
     """Hours already imported (<= after) are dropped so they aren't re-counted."""
-    readings = [_reading(0, 0, 1000.0), _reading(1, 0, 1000.0), _reading(2, 0, 1000.0)]
+    readings = [
+        _reading(0, 15, 1000.0),
+        _reading(1, 15, 1000.0),
+        _reading(2, 15, 1000.0),
+    ]
     after = datetime(2026, 1, 1, 1, tzinfo=UTC)
 
     stats = _aggregate_to_hourly_statistics(readings, initial_sum=5.0, after=after)
@@ -79,6 +85,42 @@ def test_aggregate_skips_hours_at_or_before_cutoff() -> None:
     # Only hour 2 survives; its sum continues from the seed.
     assert [s["start"] for s in stats] == [datetime(2026, 1, 1, 2, tzinfo=UTC)]
     assert stats[0]["sum"] == 6.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_uses_non_overlapping_calendar_month_requests() -> None:
+    """EDM request type 3 is fetched using the month-shaped windows used by E-REDES."""
+    calls: list[tuple[datetime, datetime]] = []
+
+    async def fetch_consumption(_cpe, start, end):
+        calls.append((start, end))
+        # The portal accepts a partial/calendar month ending at the next month's
+        # midnight, or a final partial month. Reject the old cross-month shape.
+        next_month = (
+            start.replace(day=28, hour=0, minute=0, second=0, microsecond=0)
+            + timedelta(days=4)
+        ).replace(day=1)
+        if end > next_month:
+            raise RuntimeError("cross-month request rejected")
+        return SimpleNamespace(readings=[])
+
+    client = MagicMock()
+    client.get_consumption = AsyncMock(side_effect=fetch_consumption)
+    coordinator = SimpleNamespace(cpe=CPE, client=client)
+
+    result = await _async_fetch_history(
+        coordinator,
+        statistic_id(CPE),
+        datetime(2025, 8, 10, 0, 0),
+        datetime(2025, 10, 5, 12, 34),
+    )
+
+    assert result == []
+    assert calls == [
+        (datetime(2025, 8, 10, 0, 15), datetime(2025, 9, 1, 0, 0)),
+        (datetime(2025, 9, 1, 0, 15), datetime(2025, 10, 1, 0, 0)),
+        (datetime(2025, 10, 1, 0, 15), datetime(2025, 10, 5, 12, 34)),
+    ]
 
 
 @pytest.mark.asyncio
@@ -132,7 +174,7 @@ async def test_partial_recent_history_triggers_full_year_repair() -> None:
     assert completed is True
     first_start = client.get_consumption.await_args_list[0].args[1]
     assert first_start <= now - timedelta(days=364)
-    store.async_save.assert_awaited_once_with({"version": 1})
+    store.async_save.assert_awaited_once_with({"version": HISTORY_IMPORT_VERSION})
 
 
 @pytest.mark.asyncio
@@ -154,7 +196,7 @@ async def test_current_history_version_resumes_from_latest_statistic() -> None:
         async_add_executor_job=AsyncMock(side_effect=executor_job)
     )
     store = MagicMock()
-    store.async_load = AsyncMock(return_value={"version": 1})
+    store.async_load = AsyncMock(return_value={"version": HISTORY_IMPORT_VERSION})
     store.async_save = AsyncMock()
     client = MagicMock()
     client.get_consumption = AsyncMock(return_value=SimpleNamespace(readings=[]))

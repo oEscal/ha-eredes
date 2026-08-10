@@ -36,8 +36,11 @@ hours into one bucket. See `docs/adr/0004`.
 
 **Reading**:
 A single load-curve point — the energy consumed (or exported) during one 15-minute
-interval. Carries an optional `meterLoadCurveStatus` flag taking values `0`, `1`, `2`
-or no value at all.
+interval. The timestamp identifies the **end** of that interval: the portal's own
+`request_type=3` history request starts a calendar month at `00:15` and ends it at the
+following month's `00:00`. Hourly aggregation therefore subtracts 15 minutes before
+choosing the hour bucket. Carries an optional `meterLoadCurveStatus` flag taking
+values `0`, `1`, `2` or no value at all.
 
 That flag does **not** separate real readings from estimates, and must not be filtered
 on. Verified on 2026-08-09 against `request_type=1` (the cumulative meter index, the

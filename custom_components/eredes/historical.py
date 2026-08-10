@@ -32,8 +32,8 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Maximum days to fetch in a single request (API limit)
-MAX_DAYS_PER_REQUEST = 31
+# E-REDES load-curve timestamps identify the end of each 15-minute interval.
+READING_INTERVAL = timedelta(minutes=15)
 
 # Total days of history to import
 TOTAL_HISTORY_DAYS = 365  # 1 year
@@ -42,7 +42,7 @@ TOTAL_HISTORY_DAYS = 365  # 1 year
 # version bump forces one successful full-window rebuild before append/resume
 # mode is allowed again. This repairs older partial imports without repeatedly
 # downloading a year of data on every Home Assistant restart.
-HISTORY_IMPORT_VERSION = 1
+HISTORY_IMPORT_VERSION = 2
 HISTORY_STORAGE_VERSION = 1
 HISTORY_STORAGE_KEY_PREFIX = f"{DOMAIN}.historical_import"
 
@@ -166,21 +166,34 @@ async def _async_build_import_plan(
     )
 
 
+def _next_month_start(value: datetime) -> datetime:
+    """Return midnight on the first day of the month after ``value``."""
+    month_start = value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return (month_start + timedelta(days=32)).replace(day=1)
+
+
 async def _async_fetch_history(
     coordinator: ERedesCoordinator,
     stat_id: str,
     start_date: datetime,
     end_date: datetime,
 ) -> list[ConsumptionReading] | None:
-    """Fetch a complete historical window, or return None if any chunk fails."""
-    all_readings: list[ConsumptionReading] = []
-    current_start = start_date
+    """Fetch a complete historical window using E-REDES calendar-month requests.
 
-    while current_start < end_date:
-        current_end = min(
-            current_start + timedelta(days=MAX_DAYS_PER_REQUEST),
-            end_date,
-        )
+    The portal itself sends request type 3 one calendar month at a time. Its
+    load-curve timestamps mark interval ends, so a period beginning at 00:00
+    starts requesting at 00:15 and a complete month ends at next-month 00:00.
+    This also keeps adjacent requests non-overlapping on the inclusive API.
+    """
+    all_readings: list[ConsumptionReading] = []
+    current_boundary = start_date
+
+    while current_boundary < end_date:
+        current_end = min(_next_month_start(current_boundary), end_date)
+        current_start = current_boundary + READING_INTERVAL
+        if current_start > current_end:
+            break
+
         try:
             _LOGGER.debug(
                 "Fetching %s to %s",
@@ -208,7 +221,7 @@ async def _async_fetch_history(
 
         _LOGGER.debug("Got %d readings", len(consumption.readings))
         all_readings.extend(consumption.readings)
-        current_start = current_end
+        current_boundary = current_end
 
     return all_readings
 
@@ -328,7 +341,10 @@ def _aggregate_to_hourly_statistics(
         # parse time), so this only truncates — stamping tzinfo here would
         # reinterpret a local wall clock as UTC and shift every summer reading
         # an hour late.
-        hour_start = reading.timestamp.replace(minute=0, second=0, microsecond=0)
+        # The API timestamp is the end of the quarter-hour interval. Shift to
+        # the interval start before truncating so 01:00 is counted in 00:00-01:00.
+        interval_start = reading.timestamp - READING_INTERVAL
+        hour_start = interval_start.replace(minute=0, second=0, microsecond=0)
 
         if after is not None and hour_start <= after:
             continue

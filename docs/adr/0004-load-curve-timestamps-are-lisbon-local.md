@@ -55,8 +55,10 @@ timestamp.
 ## Consequences
 
 `ConsumptionReading.timestamp` is **timezone-aware UTC** from the client outwards.
-`_aggregate_to_hourly_statistics` therefore only truncates to the hour; re-stamping
-`tzinfo` there would reintroduce the bug.
+The timestamp marks the end of its 15-minute interval, so historical aggregation
+subtracts 15 minutes and then truncates to the hour (see
+[0005](0005-edm-history-uses-calendar-month-windows.md)). Re-stamping `tzinfo` in the
+aggregator would reintroduce the timezone bug.
 
 Statistics imported before this fix are wrong for every summer hour. Historical
 imports are now versioned (see [0002](0002-external-statistics-for-history.md)), so an
