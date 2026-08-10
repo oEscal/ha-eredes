@@ -27,9 +27,11 @@ landed.
 ## Consequences
 
 The Energy Dashboard consumption source is the `eredes:energy_…` statistic, not the
-sensor (see README). Normal updates seed the cumulative `sum` from the last imported
-hour and resume forward. Full-window imports are separately versioned: when the
-history-import version changes (or no successful marker exists), the integration
+sensor (see README). History is synchronized once during integration setup and every
+day at 05:00 in Home Assistant's local time. Normal incremental updates seed the
+cumulative `sum` from the last imported hour and resume forward. Full-window imports
+are separately versioned: when the history-import version changes (or no successful
+marker exists), the integration
 re-fetches the complete one-year window and rewrites matching hourly rows while
 preserving the cumulative sum immediately before the window. A genuine failed API
 chunk aborts the whole run, so partial backfills are never committed as successful.
@@ -42,4 +44,9 @@ window.
 rows have been committed. The importer therefore waits for the recorder queue to
 commit and reads back the first and last generated hourly rows before marking a full
 history version complete. A missing or mismatched boundary row leaves the version
-marker unset so the repair is retried on the next setup.
+marker unset so the repair is retried on the next daily synchronization or setup.
+
+The history-import version is independent from the integration version. It should be
+incremented only when a code change requires already-stored historical statistics to
+be regenerated; ordinary integration updates must leave it unchanged to avoid an
+unnecessary one-year backfill for every user.

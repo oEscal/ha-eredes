@@ -17,6 +17,7 @@ API_URL: Final = f"{BASE_URL}/ms/reading/data-usage/edm/get"
 
 # Timing
 DEFAULT_SCAN_INTERVAL: Final = 3600  # 1 hour in seconds
+HISTORY_SYNC_HOUR: Final = 5  # local Home Assistant time
 
 # API request types
 REQUEST_TYPE_15MIN: Final = "3"  # 15-minute interval readings

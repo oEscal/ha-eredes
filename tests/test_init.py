@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.eredes import async_migrate_entry
+from custom_components.eredes import async_migrate_entry, async_setup_entry
 from custom_components.eredes.const import CONF_ACCESS_TOKEN, CONF_CPE, DOMAIN
 
 if TYPE_CHECKING:
@@ -15,6 +16,69 @@ if TYPE_CHECKING:
 
 CPE = "PT0002000012345678AB"
 TOKEN = "eyJ.mock.jwt"
+
+
+async def test_setup_runs_history_in_background_and_schedules_daily_5am(
+    hass: HomeAssistant,
+) -> None:
+    """History sync runs off bootstrap and repeats every day at 05:00 local time."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        data={CONF_ACCESS_TOKEN: TOKEN, CONF_CPE: CPE},
+        unique_id=CPE,
+    )
+    entry.add_to_hass(hass)
+
+    coordinator = MagicMock()
+    coordinator.cpe = CPE
+    coordinator.client = MagicMock()
+    coordinator.async_config_entry_first_refresh = AsyncMock()
+    background_task = MagicMock()
+    background_task.done.return_value = False
+    created_coroutines = []
+
+    def create_background_task(_hass, target, *, name: str):
+        del name
+        created_coroutines.append(target)
+        target.close()
+        return background_task
+
+    with (
+        patch("custom_components.eredes.ERedesCoordinator", return_value=coordinator),
+        patch.object(hass.config_entries, "async_forward_entry_setups", AsyncMock()),
+        patch.object(
+            entry,
+            "async_create_background_task",
+            side_effect=create_background_task,
+        ) as create_background_task_mock,
+        patch(
+            "custom_components.eredes.async_track_time_change",
+            create=True,
+        ) as track_time_change,
+    ):
+        assert await async_setup_entry(hass, entry) is True
+
+        create_background_task_mock.assert_called_once()
+        assert (
+            create_background_task_mock.call_args.kwargs["name"]
+            == "eredes_historical_import"
+        )
+        track_time_change.assert_called_once()
+        assert track_time_change.call_args.kwargs == {
+            "hour": 5,
+            "minute": 0,
+            "second": 0,
+        }
+
+        daily_callback = track_time_change.call_args.args[1]
+        daily_callback(MagicMock())
+        create_background_task_mock.assert_called_once()
+
+        background_task.done.return_value = True
+        daily_callback(MagicMock())
+        assert create_background_task_mock.call_count == 2
+        assert len(created_coroutines) == 2
 
 
 @pytest.mark.parametrize("legacy_key", ["session_cookie", "aat_token"])

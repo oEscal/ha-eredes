@@ -22,7 +22,7 @@ in `...MY`:
 
 | Sensor | Example entity ID | Description | Unit |
 |--------|-------------------|-------------|------|
-| Daily Energy | `sensor.e_redes_meter_my_daily_energy` | Total consumption for the most recent complete day. Because E-REDES publishes data with a ~24h delay, this reflects **yesterday's** total. This entity also carries the imported long-term statistics used by the Energy Dashboard. | kWh |
+| Daily Energy | `sensor.e_redes_meter_my_daily_energy` | Total consumption for the most recent complete day. Because E-REDES publishes data with a ~24h delay, this reflects **yesterday's** total. | kWh |
 | Power | `sensor.e_redes_meter_my_power` | Average power over the most recent 15-minute interval (derived from that interval's energy). | W |
 
 ## Installation
@@ -78,8 +78,10 @@ Home Assistant long-term statistic named **E-REDES Energy (`<CPE suffix>`)**
 API chunk succeeds; failed runs write no partial history and are retried later. The
 backfill format is versioned so upgrades can force a one-time repair of previously
 incomplete history. On normal later restarts the integration resumes from the last
-imported hour rather than re-importing the whole year. Add that statistic to your
-Energy Dashboard:
+imported hour rather than re-importing the whole year. The same incremental history
+synchronization runs every day at **05:00 in Home Assistant's local time**, so the
+Energy Dashboard statistic remains current without requiring a restart or reload.
+Add that statistic to your Energy Dashboard:
 
 1. Go to **Settings** > **Dashboards** > **Energy**
 2. Under "Grid consumption", click **Add consumption**

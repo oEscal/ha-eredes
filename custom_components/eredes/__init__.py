@@ -8,11 +8,16 @@ from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
+from homeassistant.core import callback
+from homeassistant.helpers.event import async_track_time_change
 
-from .const import CONF_ACCESS_TOKEN, LEGACY_TOKEN_KEYS
+from .const import CONF_ACCESS_TOKEN, HISTORY_SYNC_HOUR, LEGACY_TOKEN_KEYS
 from .coordinator import ERedesCoordinator
 
 if TYPE_CHECKING:
+    import asyncio
+    from datetime import datetime
+
     from homeassistant.core import HomeAssistant
 
     from .eredes_api import ERedesClient
@@ -28,6 +33,7 @@ class ERedesData:
 
     coordinator: ERedesCoordinator
     client: ERedesClient
+    historical_import_task: asyncio.Task[None] | None = None
 
 
 type ERedesConfigEntry = ConfigEntry[ERedesData]
@@ -50,10 +56,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ERedesConfigEntry) -> bo
     # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Schedule historical data import (runs in background)
-    hass.async_create_task(
-        _async_import_historical_data(hass, entry, coordinator),
-        name="eredes_historical_import",
+    # Synchronize history once at setup, then every day at 05:00 local HA time.
+    _start_historical_import(hass, entry)
+    entry.async_on_unload(
+        async_track_time_change(
+            hass,
+            lambda now: _handle_daily_history_sync(hass, entry, now),
+            hour=HISTORY_SYNC_HOUR,
+            minute=0,
+            second=0,
+        )
     )
 
     return True
@@ -87,6 +99,35 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+@callback
+def _start_historical_import(
+    hass: HomeAssistant,
+    entry: ERedesConfigEntry,
+) -> None:
+    """Start a history synchronization unless one is already running."""
+    existing_task = entry.runtime_data.historical_import_task
+    if existing_task is not None and not existing_task.done():
+        _LOGGER.debug("Historical data import already running; skipping duplicate run")
+        return
+
+    entry.runtime_data.historical_import_task = entry.async_create_background_task(
+        hass,
+        _async_import_historical_data(hass, entry, entry.runtime_data.coordinator),
+        name="eredes_historical_import",
+    )
+
+
+@callback
+def _handle_daily_history_sync(
+    hass: HomeAssistant,
+    entry: ERedesConfigEntry,
+    _now: datetime,
+) -> None:
+    """Start the scheduled daily history synchronization."""
+    _LOGGER.debug("Starting scheduled 05:00 historical data synchronization")
+    _start_historical_import(hass, entry)
+
+
 async def _async_import_historical_data(
     hass: HomeAssistant,
     _entry: ERedesConfigEntry,
@@ -102,7 +143,8 @@ async def _async_import_historical_data(
             _LOGGER.debug("Historical data import completed")
         else:
             _LOGGER.warning(
-                "Historical data import incomplete; it will be retried on next setup"
+                "Historical data import incomplete; it will be retried at the next "
+                "daily synchronization or integration setup"
             )
     except Exception:
         _LOGGER.exception("Failed to import historical data")
