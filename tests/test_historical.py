@@ -88,21 +88,20 @@ def test_aggregate_skips_hours_at_or_before_cutoff() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_history_uses_non_overlapping_calendar_month_requests() -> None:
-    """EDM request type 3 is fetched using the month-shaped windows used by E-REDES."""
+async def test_fetch_history_uses_full_months_then_daily_partial_month() -> None:
+    """Backfill mirrors portal month ranges and proven live daily ranges."""
     calls: list[tuple[datetime, datetime]] = []
+    before_cutoff = ConsumptionReading(
+        timestamp=datetime(2025, 8, 5, 12, 15, tzinfo=UTC), value_wh=1000.0
+    )
+    after_cutoff = ConsumptionReading(
+        timestamp=datetime(2025, 8, 10, 12, 15, tzinfo=UTC), value_wh=1000.0
+    )
 
     async def fetch_consumption(_cpe, start, end):
         calls.append((start, end))
-        # The portal accepts a partial/calendar month ending at the next month's
-        # midnight, or a final partial month. Reject the old cross-month shape.
-        next_month = (
-            start.replace(day=28, hour=0, minute=0, second=0, microsecond=0)
-            + timedelta(days=4)
-        ).replace(day=1)
-        if end > next_month:
-            raise RuntimeError("cross-month request rejected")
-        return SimpleNamespace(readings=[])
+        readings = [before_cutoff, after_cutoff] if len(calls) == 1 else []
+        return SimpleNamespace(readings=readings)
 
     client = MagicMock()
     client.get_consumption = AsyncMock(side_effect=fetch_consumption)
@@ -112,14 +111,15 @@ async def test_fetch_history_uses_non_overlapping_calendar_month_requests() -> N
         coordinator,
         statistic_id(CPE),
         datetime(2025, 8, 10, 0, 0),
-        datetime(2025, 10, 5, 12, 34),
+        datetime(2025, 10, 2, 12, 34),
     )
 
-    assert result == []
+    assert result == [after_cutoff]
     assert calls == [
-        (datetime(2025, 8, 10, 0, 15), datetime(2025, 9, 1, 0, 0)),
+        (datetime(2025, 8, 1, 0, 15), datetime(2025, 9, 1, 0, 0)),
         (datetime(2025, 9, 1, 0, 15), datetime(2025, 10, 1, 0, 0)),
-        (datetime(2025, 10, 1, 0, 15), datetime(2025, 10, 5, 12, 34)),
+        (datetime(2025, 10, 1, 0, 15), datetime(2025, 10, 2, 0, 0)),
+        (datetime(2025, 10, 2, 0, 15), datetime(2025, 10, 2, 12, 34)),
     ]
 
 

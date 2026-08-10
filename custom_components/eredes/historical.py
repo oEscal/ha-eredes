@@ -166,10 +166,50 @@ async def _async_build_import_plan(
     )
 
 
+def _month_start(value: datetime) -> datetime:
+    """Return local midnight on the first day of ``value``'s month."""
+    return value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
 def _next_month_start(value: datetime) -> datetime:
     """Return midnight on the first day of the month after ``value``."""
-    month_start = value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    return (month_start + timedelta(days=32)).replace(day=1)
+    return (_month_start(value) + timedelta(days=32)).replace(day=1)
+
+
+def _history_request_windows(
+    start_date: datetime,
+    end_date: datetime,
+) -> list[tuple[datetime, datetime]]:
+    """Build request windows accepted by the E-REDES EDM history endpoint.
+
+    Completed months use the exact shape emitted by the portal: first interval
+    end at 00:15 through next-month 00:00. The incomplete final month is split
+    into daily windows, matching the request shape already used successfully by
+    the live coordinator.
+    """
+    windows: list[tuple[datetime, datetime]] = []
+    month_cursor = _month_start(start_date)
+
+    while month_cursor < end_date:
+        month_end = _next_month_start(month_cursor)
+        if month_end <= end_date:
+            windows.append((month_cursor + READING_INTERVAL, month_end))
+            month_cursor = month_end
+            continue
+
+        day_cursor = max(
+            month_cursor,
+            start_date.replace(hour=0, minute=0, second=0, microsecond=0),
+        )
+        while day_cursor < end_date:
+            day_end = min(day_cursor + timedelta(days=1), end_date)
+            request_start = day_cursor + READING_INTERVAL
+            if request_start <= day_end:
+                windows.append((request_start, day_end))
+            day_cursor += timedelta(days=1)
+        break
+
+    return windows
 
 
 async def _async_fetch_history(
@@ -178,22 +218,15 @@ async def _async_fetch_history(
     start_date: datetime,
     end_date: datetime,
 ) -> list[ConsumptionReading] | None:
-    """Fetch a complete historical window using E-REDES calendar-month requests.
+    """Fetch the requested history using portal-compatible request windows.
 
-    The portal itself sends request type 3 one calendar month at a time. Its
-    load-curve timestamps mark interval ends, so a period beginning at 00:00
-    starts requesting at 00:15 and a complete month ends at next-month 00:00.
-    This also keeps adjacent requests non-overlapping on the inclusive API.
+    Complete months are fetched in full even when the desired one-year cutoff
+    lies inside the first month. Extra readings outside the desired interval are
+    discarded locally after parsing.
     """
     all_readings: list[ConsumptionReading] = []
-    current_boundary = start_date
 
-    while current_boundary < end_date:
-        current_end = min(_next_month_start(current_boundary), end_date)
-        current_start = current_boundary + READING_INTERVAL
-        if current_start > current_end:
-            break
-
+    for current_start, current_end in _history_request_windows(start_date, end_date):
         try:
             _LOGGER.debug(
                 "Fetching %s to %s",
@@ -221,9 +254,18 @@ async def _async_fetch_history(
 
         _LOGGER.debug("Got %d readings", len(consumption.readings))
         all_readings.extend(consumption.readings)
-        current_boundary = current_end
 
-    return all_readings
+    # Readings are timestamped at interval end. Convert back to the Lisbon wall
+    # clock used by request boundaries and retain only intervals inside the
+    # originally requested range, excluding any extra days fetched from the
+    # first calendar month.
+    return [
+        reading
+        for reading in all_readings
+        if start_date
+        < reading.timestamp.astimezone(LISBON).replace(tzinfo=None)
+        <= end_date
+    ]
 
 
 async def async_import_historical_data(
