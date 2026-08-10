@@ -74,9 +74,12 @@ The token will expire after some time (typically when you log out or after exten
 
 On first setup the integration imports up to a year of historical consumption into a
 Home Assistant long-term statistic named **E-REDES Energy (`<CPE suffix>`)**
-(id `eredes:energy_<cpe suffix>`). On later restarts it resumes from the last imported
-hour rather than re-importing the whole year. Add that statistic to your Energy
-Dashboard:
+(id `eredes:energy_<cpe suffix>`). A full backfill is only marked complete when every
+API chunk succeeds; failed runs write no partial history and are retried later. The
+backfill format is versioned so upgrades can force a one-time repair of previously
+incomplete history. On normal later restarts the integration resumes from the last
+imported hour rather than re-importing the whole year. Add that statistic to your
+Energy Dashboard:
 
 1. Go to **Settings** > **Dashboards** > **Energy**
 2. Under "Grid consumption", click **Add consumption**

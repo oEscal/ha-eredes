@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from custom_components.eredes.eredes_api.client import ERedesClient
+from custom_components.eredes.eredes_api.exceptions import ERedesError
 
 START = datetime(2026, 1, 1)
 END = datetime(2026, 1, 6)
@@ -268,9 +269,10 @@ def test_readings_are_sorted_by_timestamp() -> None:
 # --- envelope ----------------------------------------------------------------
 
 
-def test_unsuccessful_response_yields_no_readings() -> None:
-    """``Success: false`` is not parsed for data."""
-    assert _parse(_response([_curve()], success=False)) == []
+def test_unsuccessful_response_raises_error() -> None:
+    """``Success: false`` is an API failure, not a valid empty dataset."""
+    with pytest.raises(ERedesError, match="unsuccessful"):
+        _parse(_response([_curve()], success=False))
 
 
 def test_empty_result_yields_no_readings() -> None:

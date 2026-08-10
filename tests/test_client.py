@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
 
 from custom_components.eredes.eredes_api.client import ERedesClient
+from custom_components.eredes.eredes_api.exceptions import ERedesError
 
 # A representative JWT-shaped token (base64url segments joined by dots).
 TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.abc-def_ghi"
@@ -82,3 +84,18 @@ def test_blank_cookie_yields_no_authorization_header() -> None:
 
     assert client._aat_token == ""
     assert "Authorization-Request" not in headers
+
+
+def test_unsuccessful_api_body_raises_error() -> None:
+    """HTTP 200 with Body.Success=false must not masquerade as empty consumption."""
+    client = _make_client(TOKEN)
+    start = datetime(2026, 1, 1)
+    end = datetime(2026, 1, 2)
+
+    with pytest.raises(ERedesError, match="unsuccessful"):
+        client._parse_consumption_response(
+            "PT0002000012345678AB",
+            {"Body": {"Success": False}},
+            start,
+            end,
+        )

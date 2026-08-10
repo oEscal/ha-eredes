@@ -25,6 +25,9 @@ landed.
 ## Consequences
 
 The Energy Dashboard consumption source is the `eredes:energy_…` statistic, not the
-sensor (see README). The cumulative `sum` is seeded from the last imported hour on
-resume, so imports are append-only; corrections to already-imported hours are not
-re-pulled.
+sensor (see README). Normal updates seed the cumulative `sum` from the last imported
+hour and resume forward. Full-window imports are separately versioned: when the
+history-import version changes (or no successful marker exists), the integration
+re-fetches the complete one-year window and rewrites matching hourly rows while
+preserving the cumulative sum immediately before the window. A failed API chunk
+aborts the whole run, so partial backfills are never committed as successful.

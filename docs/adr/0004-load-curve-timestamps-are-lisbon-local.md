@@ -58,13 +58,12 @@ timestamp.
 `_aggregate_to_hourly_statistics` therefore only truncates to the hour; re-stamping
 `tzinfo` there would reintroduce the bug.
 
-Statistics imported before this fix are wrong for every summer hour and are **not**
-self-correcting: the import resumes from the last stored hour and is append-only
-(see [0002](0002-external-statistics-for-history.md)). Fixing an existing install
-means clearing the `eredes:energy_…` statistic — Developer Tools → Statistics → *Fix
-issue* / remove — and letting the next import rebuild the year from scratch.
+Statistics imported before this fix are wrong for every summer hour. Historical
+imports are now versioned (see [0002](0002-external-statistics-for-history.md)), so an
+upgrade can force one complete one-year rebuild and correct matching rows without the
+user manually deleting the statistic. Normal later runs still resume from the newest
+stored hour.
 
-The request window in `get_consumption` is still built from naive local `datetime.now()`
-values, which is what the API expects, since it speaks the same local clock. That is
-consistent but only by coincidence on a host running Europe/Lisbon; the window is
-padded by `REFETCH_BUFFER_DAYS`, so an hour of skew at the edges changes nothing.
+Historical request boundaries are explicitly converted from UTC to naive
+`Europe/Lisbon` wall-clock values before calling `get_consumption`, matching the clock
+used by the E-REDES API regardless of the Home Assistant host timezone.

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from homeassistant.components.recorder import get_instance  # type: ignore[attr-defined]
 from homeassistant.components.recorder.models import (
@@ -15,8 +17,10 @@ from homeassistant.components.recorder.models import (
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
+    statistics_during_period,
 )
 from homeassistant.const import UnitOfEnergy
+from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
 
@@ -34,10 +38,32 @@ MAX_DAYS_PER_REQUEST = 31
 # Total days of history to import
 TOTAL_HISTORY_DAYS = 365  # 1 year
 
-# When resuming, start the fetch a couple of days before the last stored hour
-# so the window comfortably covers it despite any timezone skew. Aggregation
-# then drops everything up to and including that hour, so nothing is re-counted.
+# Historical import state is versioned independently from the integration. A
+# version bump forces one successful full-window rebuild before append/resume
+# mode is allowed again. This repairs older partial imports without repeatedly
+# downloading a year of data on every Home Assistant restart.
+HISTORY_IMPORT_VERSION = 1
+HISTORY_STORAGE_VERSION = 1
+HISTORY_STORAGE_KEY_PREFIX = f"{DOMAIN}.historical_import"
+
+# E-REDES request boundaries are Lisbon wall-clock values.
+LISBON = ZoneInfo("Europe/Lisbon")
+
+# When resuming, start the fetch a couple of days before the last stored hour.
+# Aggregation then drops everything up to and including that hour, so already
+# stored statistics are never re-counted.
 REFETCH_BUFFER_DAYS = 2
+
+
+@dataclass(slots=True)
+class _HistoryImportPlan:
+    """Resolved boundaries and cumulative state for one historical import."""
+
+    start_date: datetime
+    end_date: datetime
+    initial_sum: float
+    after: datetime | None
+    needs_full_import: bool
 
 
 def statistic_id(cpe: str) -> str:
@@ -49,21 +75,14 @@ def statistic_id(cpe: str) -> str:
     return f"{DOMAIN}:energy_{cpe[-8:].lower()}"
 
 
-async def async_import_historical_data(
+async def _async_build_import_plan(
     hass: HomeAssistant,
     coordinator: ERedesCoordinator,
-) -> None:
-    """Import historical energy data from E-REDES.
-
-    This function fetches up to 1 year of historical consumption data
-    and imports it into Home Assistant's long-term statistics.
-    """
-    stat_id = statistic_id(coordinator.cpe)
-    _LOGGER.debug("Historical import starting for %s", stat_id)
-
-    # Resume from the last imported hour when we already have statistics;
-    # otherwise import the full history window.
-    last_stats = await get_instance(hass).async_add_executor_job(
+    stat_id: str,
+) -> tuple[_HistoryImportPlan, Store[dict[str, int]]]:
+    """Resolve whether this run must rebuild the year or can resume."""
+    recorder = get_instance(hass)
+    last_stats = await recorder.async_add_executor_job(
         get_last_statistics,
         hass,
         1,
@@ -72,29 +91,88 @@ async def async_import_historical_data(
         {"sum"},
     )
 
-    full_start = datetime.now() - timedelta(days=TOTAL_HISTORY_DAYS)
-    initial_sum = 0.0
-    after: datetime | None = None
-    if last_stats and stat_id in last_stats:
-        last_row = last_stats[stat_id][0]
-        # get_last_statistics returns start as a UTC epoch; read it back in UTC
-        # so it lines up with the UTC hour buckets we store.
-        after = datetime.fromtimestamp(last_row["start"], tz=UTC)
-        initial_sum = last_row.get("sum") or 0.0
-        # Fetch from a couple of days before the cutoff (window safety against
-        # timezone skew); _aggregate_to_hourly_statistics drops anything up to
-        # and including `after`, so already-counted hours are never re-added.
-        start_date = max(
-            full_start, after.replace(tzinfo=None) - timedelta(days=REFETCH_BUFFER_DAYS)
+    store: Store[dict[str, int]] = Store(
+        hass,
+        HISTORY_STORAGE_VERSION,
+        f"{HISTORY_STORAGE_KEY_PREFIX}_{coordinator.cpe.lower()}",
+    )
+    import_state = await store.async_load()
+    full_import_current = (
+        isinstance(import_state, dict)
+        and import_state.get("version") == HISTORY_IMPORT_VERSION
+    )
+
+    now_utc = datetime.now(tz=UTC)
+    now_local = now_utc.astimezone(LISBON).replace(tzinfo=None)
+    full_start_local = (now_local - timedelta(days=TOTAL_HISTORY_DAYS)).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    full_start_utc = full_start_local.replace(tzinfo=LISBON).astimezone(UTC)
+    needs_full_import = not full_import_current or not (
+        last_stats and stat_id in last_stats and last_stats[stat_id]
+    )
+
+    if needs_full_import:
+        baseline_stats = await recorder.async_add_executor_job(
+            statistics_during_period,
+            hass,
+            full_start_utc - timedelta(hours=1),
+            full_start_utc,
+            {stat_id},
+            "hour",
+            None,
+            {"sum"},
         )
-        _LOGGER.debug("Resuming historical import after %s", after.isoformat())
-    else:
-        start_date = full_start
-        _LOGGER.debug("Importing full history window from %s", start_date.isoformat())
+        baseline_rows = baseline_stats.get(stat_id, [])
+        initial_sum = 0.0
+        if baseline_rows:
+            initial_sum = baseline_rows[-1].get("sum") or 0.0
+        _LOGGER.debug(
+            "Importing full history window from %s (history import version %d)",
+            full_start_local.isoformat(),
+            HISTORY_IMPORT_VERSION,
+        )
+        return (
+            _HistoryImportPlan(
+                start_date=full_start_local,
+                end_date=now_local,
+                initial_sum=initial_sum,
+                after=None,
+                needs_full_import=True,
+            ),
+            store,
+        )
 
-    end_date = datetime.now()
+    last_row = last_stats[stat_id][0]
+    after = datetime.fromtimestamp(last_row["start"], tz=UTC)
+    after_local = after.astimezone(LISBON).replace(tzinfo=None)
+    start_date = max(
+        full_start_local,
+        after_local - timedelta(days=REFETCH_BUFFER_DAYS),
+    )
+    _LOGGER.debug("Resuming historical import after %s", after.isoformat())
+    return (
+        _HistoryImportPlan(
+            start_date=start_date,
+            end_date=now_local,
+            initial_sum=last_row.get("sum") or 0.0,
+            after=after,
+            needs_full_import=False,
+        ),
+        store,
+    )
 
-    # Fetch data in chunks to avoid API timeouts
+
+async def _async_fetch_history(
+    coordinator: ERedesCoordinator,
+    stat_id: str,
+    start_date: datetime,
+    end_date: datetime,
+) -> list[ConsumptionReading] | None:
+    """Fetch a complete historical window, or return None if any chunk fails."""
     all_readings: list[ConsumptionReading] = []
     current_start = start_date
 
@@ -103,7 +181,6 @@ async def async_import_historical_data(
             current_start + timedelta(days=MAX_DAYS_PER_REQUEST),
             end_date,
         )
-
         try:
             _LOGGER.debug(
                 "Fetching %s to %s",
@@ -115,8 +192,6 @@ async def async_import_historical_data(
                 current_start,
                 current_end,
             )
-            _LOGGER.debug("Got %d readings", len(consumption.readings))
-            all_readings.extend(consumption.readings)
         except Exception as ex:
             _LOGGER.error(
                 "Failed to fetch history %s - %s: %s",
@@ -124,23 +199,70 @@ async def async_import_historical_data(
                 current_end.isoformat(),
                 ex,
             )
+            _LOGGER.warning(
+                "Historical import for %s was incomplete; no statistics were written "
+                "and the missing window will be retried on the next integration setup",
+                stat_id,
+            )
+            return None
 
+        _LOGGER.debug("Got %d readings", len(consumption.readings))
+        all_readings.extend(consumption.readings)
         current_start = current_end
 
-    if not all_readings:
-        _LOGGER.debug("No historical data found to import")
-        return
+    return all_readings
 
-    # Sort readings by timestamp
+
+async def async_import_historical_data(
+    hass: HomeAssistant,
+    coordinator: ERedesCoordinator,
+) -> bool:
+    """Import historical energy data from E-REDES.
+
+    A versioned full-window import is required before normal resume mode is
+    allowed. That makes upgrades self-heal older partial imports: if any chunk
+    of the year fails, nothing from that run is written and the full backfill is
+    retried later. Once a complete window has succeeded, later runs only append
+    after the latest stored statistic.
+    """
+    stat_id = statistic_id(coordinator.cpe)
+    _LOGGER.debug("Historical import starting for %s", stat_id)
+
+    plan, store = await _async_build_import_plan(hass, coordinator, stat_id)
+    all_readings = await _async_fetch_history(
+        coordinator,
+        stat_id,
+        plan.start_date,
+        plan.end_date,
+    )
+    if all_readings is None:
+        return False
+
+    if not all_readings:
+        if plan.needs_full_import:
+            _LOGGER.warning(
+                "Full historical import for %s returned no readings; it was not "
+                "marked complete",
+                stat_id,
+            )
+            return False
+        _LOGGER.debug("No new historical data found to import")
+        return True
+
     all_readings.sort(key=lambda r: r.timestamp)
 
-    # Aggregate to hourly statistics, continuing the cumulative sum from the
-    # last import and skipping hours already stored.
-    statistics = _aggregate_to_hourly_statistics(all_readings, initial_sum, after)
+    # On a full rebuild `plan.after` is None and all rows in the year are
+    # regenerated. Home Assistant updates existing external-statistics rows at
+    # matching timestamps, repairing partial imports and cumulative sums.
+    statistics = _aggregate_to_hourly_statistics(
+        all_readings,
+        plan.initial_sum,
+        plan.after,
+    )
 
     if not statistics:
         _LOGGER.debug("No statistics generated from %d readings", len(all_readings))
-        return
+        return not plan.needs_full_import
 
     metadata = StatisticMetaData(
         has_mean=False,
@@ -155,14 +277,26 @@ async def async_import_historical_data(
 
     try:
         async_add_external_statistics(hass, metadata, statistics)
-        _LOGGER.debug(
-            "Imported %d hourly stats (%.3f kWh) for %s",
-            len(statistics),
-            statistics[-1]["sum"],
-            stat_id,
-        )
     except Exception:
         _LOGGER.exception("Failed to add external statistics for %s", stat_id)
+        return False
+
+    _LOGGER.debug(
+        "Imported %d hourly stats (%.3f kWh) for %s",
+        len(statistics),
+        statistics[-1]["sum"],
+        stat_id,
+    )
+
+    if plan.needs_full_import:
+        await store.async_save({"version": HISTORY_IMPORT_VERSION})
+        _LOGGER.debug(
+            "Completed full history import version %d for %s",
+            HISTORY_IMPORT_VERSION,
+            stat_id,
+        )
+
+    return True
 
 
 def _aggregate_to_hourly_statistics(

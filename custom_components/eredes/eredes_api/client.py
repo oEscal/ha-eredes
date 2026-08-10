@@ -266,10 +266,20 @@ class ERedesClient:
         try:
             body = data.get("Body", {})
             if not body.get("Success", False):
-                _LOGGER.warning("API returned unsuccessful response")
-                return ConsumptionData(
-                    cpe=cpe, readings=[], start_date=start_date, end_date=end_date
+                # The portal can return HTTP 200 even when the request itself
+                # failed. Treat that as an API error rather than valid empty
+                # consumption; otherwise historical imports can silently commit
+                # incomplete windows and never retry the missing period.
+                detail = (
+                    body.get("Message")
+                    or body.get("Error")
+                    or data.get("Message")
+                    or data.get("Error")
                 )
+                message = "API returned unsuccessful response"
+                if detail:
+                    message = f"{message}: {detail}"
+                raise ERedesError(message)
 
             result = body.get("Result", {})
             devices = result.get("utilitiesDevices", [])
@@ -313,7 +323,7 @@ class ERedesClient:
                     )
 
         except (KeyError, TypeError, ValueError) as ex:
-            _LOGGER.exception("Error parsing consumption response: %s", ex)
+            raise ERedesError(f"Failed to parse consumption response: {ex}") from ex
 
         # Sort readings by timestamp
         readings.sort(key=lambda r: r.timestamp)

@@ -97,7 +97,12 @@ async def _async_import_historical_data(
 
     _LOGGER.debug("Starting historical data import for CPE %s", coordinator.cpe[-8:])
     try:
-        await async_import_historical_data(hass, coordinator)
-        _LOGGER.debug("Historical data import completed")
+        completed = await async_import_historical_data(hass, coordinator)
+        if completed:
+            _LOGGER.debug("Historical data import completed")
+        else:
+            _LOGGER.warning(
+                "Historical data import incomplete; it will be retried on next setup"
+            )
     except Exception:
         _LOGGER.exception("Failed to import historical data")
