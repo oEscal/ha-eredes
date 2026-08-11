@@ -16,7 +16,7 @@ from .exceptions import (
     ERedesError,
     ERedesRequestRejectedError,
 )
-from .models import ConsumptionData, ConsumptionReading
+from .models import ConsumptionData, ConsumptionReading, MeterIndex
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
@@ -28,6 +28,32 @@ API_URL = f"{BASE_URL}/ms/reading/data-usage/edm/get"
 
 # Load-curve timestamps are Lisbon wall-clock time despite their ``Z`` suffix.
 LISBON = ZoneInfo("Europe/Lisbon")
+
+
+def _active_import_index_kwh(reading: dict[str, Any]) -> float | None:
+    """Return the cumulative active-import index for one formatted reading.
+
+    E-REDES exposes different active register layouts depending on the tariff:
+    ``S`` for simple, ``V``/``FV`` for bi-hourly, ``V``/``P``/``C`` for
+    tri-hourly, and ``SV``/``VN``/``P``/``C`` for four-period meters.
+    """
+
+    def _sum_registers(registers: tuple[str, ...]) -> float | None:
+        values: list[float] = []
+        for register in registers:
+            value = reading.get(register)
+            if value is None:
+                continue
+            values.append(float(value))
+        return sum(values) if values else None
+
+    if reading.get("S") is not None:
+        return _sum_registers(("S",))
+    if reading.get("SV") is not None or reading.get("VN") is not None:
+        return _sum_registers(("SV", "VN", "P", "C"))
+    if reading.get("FV") is not None:
+        return _sum_registers(("V", "FV"))
+    return _sum_registers(("V", "P", "C"))
 
 
 def _to_utc_series(timestamps: list[datetime]) -> list[datetime]:
@@ -225,6 +251,59 @@ class ERedesClient:
             _LOGGER.exception("Error fetching consumption data")
             raise ERedesConnectionError(f"Failed to fetch data: {ex}") from ex
 
+    async def get_meter_indexes(
+        self,
+        cpe: str,
+        start_date: datetime,
+        end_date: datetime,
+    ) -> list[MeterIndex]:
+        """Fetch cumulative real meter indexes for the specified date range.
+
+        This mirrors the Balcão Digital "Leituras > Consultar histórico" request:
+        request type 1 with formatted output. Only valid real active-import
+        readings are retained by the parser.
+        """
+        payload = {
+            "cpe": cpe,
+            "request_type": "1",
+            "start_date": start_date.strftime("%Y-%m-%d %H:%M:%S"),
+            "end_date": end_date.strftime("%Y-%m-%d %H:%M:%S"),
+            "wait": True,
+            "formatted": True,
+            "nif_requester": None,
+            "serial_number": "",
+            "nif": None,
+        }
+
+        try:
+            async with self._session.post(
+                API_URL,
+                json=payload,
+                headers=self._get_headers(),
+            ) as response:
+                self._refresh_session_from_response(response)
+
+                if response.status == 401:
+                    raise ERedesAuthenticationError(
+                        "Token expired - please update your token"
+                    )
+
+                if response.status == 403:
+                    raise ERedesAuthenticationError("Access denied - invalid token")
+
+                if response.status != 200:
+                    raise ERedesError(
+                        f"API request failed with status {response.status}"
+                    )
+
+                return self._parse_meter_index_response(await response.json())
+
+        except ERedesError:
+            raise
+        except Exception as ex:
+            _LOGGER.exception("Error fetching meter indexes")
+            raise ERedesConnectionError(f"Failed to fetch meter indexes: {ex}") from ex
+
     def _refresh_session_from_response(self, response: Any) -> None:
         """Update session cookie from API response Set-Cookie header."""
         set_cookie = response.headers.get("Set-Cookie", "")
@@ -238,6 +317,125 @@ class ERedesClient:
                     self._cookies["PHPSESSID"] = new_phpsessid
                     self._cookie_header = self._build_cookie_header(self._cookies)
                     _LOGGER.debug("Session refreshed with new PHPSESSID")
+
+    @staticmethod
+    def _meter_index_result(data: dict[str, Any]) -> Any:
+        """Return request-type-1 result data or raise for a rejected response."""
+        body = data.get("Body", {})
+        if body.get("Success", False):
+            return body.get("Result", [])
+
+        status = data.get("Header", {}).get("Status", {})
+        response_statuses = status.get("ResponseStatuses", {}).get(
+            "ResponseStatus", []
+        )
+        if isinstance(response_statuses, dict):
+            response_statuses = [response_statuses]
+        if any(
+            isinstance(item, dict)
+            and (
+                str(item.get("Code", "")) == "-1002"
+                or str(item.get("Description", "")).lower() == "result is empty"
+            )
+            for item in response_statuses
+        ):
+            return []
+
+        detail = {
+            key: value
+            for key, value in body.items()
+            if key not in {"Success", "Result"}
+        }
+        if not detail:
+            detail = {key: value for key, value in data.items() if key != "Body"}
+        message = "API returned unsuccessful response"
+        if detail:
+            encoded_detail = json.dumps(
+                detail,
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            )[:1000]
+            message = f"{message}: {encoded_detail}"
+        raise ERedesRequestRejectedError(message)
+
+    def _parse_meter_index_record(
+        self,
+        reading: Any,
+        outer_serial: str,
+    ) -> tuple[tuple[int, int], MeterIndex] | None:
+        """Parse one valid real active-import cumulative reading."""
+        if not isinstance(reading, dict):
+            return None
+        mr_type = str(reading.get("mrType", ""))
+        if mr_type not in {"1", "2"}:
+            return None
+        reading_status = str(reading.get("status", "")).strip().lower()
+        if reading_status not in {"activa", "corrigida"}:
+            return None
+
+        timestamp_str = reading.get("date")
+        if not isinstance(timestamp_str, str):
+            return None
+        local_timestamp = self._parse_timestamp(timestamp_str)
+        value_kwh = _active_import_index_kwh(reading)
+        if local_timestamp is None or value_kwh is None:
+            return None
+
+        meter_serial = str(reading.get("eqNumber") or outer_serial)
+        timestamp = local_timestamp.replace(tzinfo=LISBON).astimezone(UTC)
+        meter_index = MeterIndex(
+            timestamp=timestamp,
+            value_kwh=value_kwh,
+            meter_serial=meter_serial,
+        )
+        rank = (
+            1 if mr_type == "1" else 0,
+            1 if reading_status == "corrigida" else 0,
+        )
+        return rank, meter_index
+
+    def _parse_meter_index_response(self, data: dict[str, Any]) -> list[MeterIndex]:
+        """Parse valid real cumulative active-import indexes from request type 1."""
+        raw_result = self._meter_index_result(data)
+        if isinstance(raw_result, dict):
+            equipment_history = raw_result.get("equipmentHistory", [])
+            if not equipment_history and "Readings" in raw_result:
+                equipment_history = [raw_result]
+        elif isinstance(raw_result, list):
+            equipment_history = raw_result
+        else:
+            equipment_history = []
+
+        # A corrected reading supersedes an active reading at the same meter and
+        # instant. An operator reading is preferred to a customer-provided real
+        # reading when both exist at the same instant.
+        selected: dict[tuple[str, datetime], tuple[tuple[int, int], MeterIndex]] = {}
+        for equipment in equipment_history:
+            if not isinstance(equipment, dict):
+                continue
+            readings_data = equipment.get("Readings")
+            if not isinstance(readings_data, dict):
+                continue
+            active = readings_data.get("active", [])
+            if not isinstance(active, list):
+                continue
+
+            outer_serial = str(equipment.get("equipNumber") or "")
+            for reading in active:
+                parsed = self._parse_meter_index_record(reading, outer_serial)
+                if parsed is None:
+                    continue
+                rank, meter_index = parsed
+                key = (meter_index.meter_serial, meter_index.timestamp)
+                current = selected.get(key)
+                if current is None or rank > current[0]:
+                    selected[key] = (rank, meter_index)
+
+        return sorted(
+            (item[1] for item in selected.values()),
+            key=lambda index: (index.timestamp, index.meter_serial),
+        )
 
     def _parse_consumption_response(
         self,

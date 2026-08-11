@@ -132,3 +132,113 @@ def test_other_unsuccessful_api_body_raises_rejected_error_with_details() -> Non
             start,
             end,
         )
+
+
+def test_parse_real_meter_indexes_uses_valid_active_import_registers() -> None:
+    """Request type 1 exposes the real cumulative index used to correct a day."""
+    client = _make_client(TOKEN)
+
+    indexes = client._parse_meter_index_response(
+        {
+            "Body": {
+                "Success": True,
+                "Result": [
+                    {
+                        "equipNumber": "12345678",
+                        "Readings": {
+                            "active": [
+                                {
+                                    "date": "2026-08-01 00:00:00",
+                                    "status": "activa",
+                                    "mrType": "1",
+                                    "eqNumber": "12345678",
+                                    "V": 4062,
+                                    "P": 1910,
+                                    "C": 4637,
+                                },
+                                {
+                                    "date": "2026-08-02 00:00:00",
+                                    "status": "corrigida",
+                                    "mrType": "1",
+                                    "eqNumber": "12345678",
+                                    "V": 4064,
+                                    "P": 1912,
+                                    "C": 4645,
+                                },
+                                {
+                                    "date": "2026-08-03 00:00:00",
+                                    "status": "desactivada",
+                                    "mrType": "1",
+                                    "V": 9999,
+                                    "P": 9999,
+                                    "C": 9999,
+                                },
+                                {
+                                    "date": "2026-08-04 00:00:00",
+                                    "status": "activa",
+                                    "mrType": "3",
+                                    "V": 9999,
+                                    "P": 9999,
+                                    "C": 9999,
+                                },
+                            ]
+                        },
+                    }
+                ],
+            }
+        }
+    )
+
+    assert [index.value_kwh for index in indexes] == [10609.0, 10621.0]
+    assert indexes[0].meter_serial == "12345678"
+    # Midnight in Lisbon is 23:00 UTC during WEST.
+    assert indexes[0].timestamp.isoformat() == "2026-07-31T23:00:00+00:00"
+
+
+def test_parse_real_meter_indexes_supports_simple_and_bihourly_registers() -> None:
+    """The cumulative total follows the tariff register layout of each reading."""
+    client = _make_client(TOKEN)
+
+    indexes = client._parse_meter_index_response(
+        {
+            "Body": {
+                "Success": True,
+                "Result": [
+                    {
+                        "equipNumber": "simple",
+                        "Readings": {
+                            "active": [
+                                {
+                                    "date": "2026-01-01 00:00:00",
+                                    "status": "activa",
+                                    "mrType": "1",
+                                    "S": 100.5,
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "equipNumber": "bi",
+                        "Readings": {
+                            "active": [
+                                {
+                                    "date": "2026-01-01 00:00:00",
+                                    "status": "activa",
+                                    "mrType": "1",
+                                    "V": 40,
+                                    "FV": 60,
+                                }
+                            ]
+                        },
+                    },
+                ],
+            }
+        }
+    )
+
+    assert sorted(
+        (index.meter_serial, index.value_kwh) for index in indexes
+    ) == [
+        ("bi", 100.0),
+        ("simple", 100.5),
+    ]

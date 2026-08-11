@@ -43,13 +43,27 @@ choosing the hour bucket. Carries an optional `meterLoadCurveStatus` flag taking
 values `0`, `1`, `2` or no value at all.
 
 That flag does **not** separate real readings from estimates, and must not be filtered
-on. Verified on 2026-08-09 against `request_type=1` (the cumulative meter index, the
-physical register): summing *every* load-curve point reproduces the index delta to
-within its 1 kWh quantization across five independent multi-week spans (99.5%–101.2%).
-Keeping only status `0` yields 0%–27% of true consumption; keeping `0` and unflagged
-yields 0%–86%. One 14-day span carried status `1` on 1343 of 1344 points, so any such
-filter would have silently discarded the entire period.
+on. Verified on 2026-08-09 against `request_type=1` cumulative meter indexes: across
+five older multi-week spans, summing *every* load-curve point reproduced the index
+delta to within its 1 kWh quantization (99.5%–101.2%). Keeping only status `0` yielded
+0%–27% of true consumption; keeping `0` and unflagged yielded 0%–86%. One 14-day span
+carried status `1` on 1343 of 1344 points, so any such filter would have silently
+discarded the entire period. This historical agreement is not a guarantee for recent
+data: on 2026-08-11 recent August load curves materially disagreed with valid real
+midnight meter indexes. Historical statistics therefore reconcile complete days to
+real index deltas when available; see `docs/adr/0006`.
 _Avoid_: "measurement", "sample".
+
+**Meter index**:
+A cumulative active-import register reading from `request_type=1`, `formatted=true`,
+as shown under **Leituras > Consultar histórico**. Valid real readings have `mrType=1`
+(operator) or `mrType=2` (customer) and status `activa`/`corrigida`. For the same
+physical meter, the difference between consecutive Europe/Lisbon midnight indexes is
+the authoritative consumption total for the intervening local calendar day. The
+integration keeps the 15-minute curve as the intraday shape but scales it to this real
+daily delta whenever both endpoints exist. Real indexes commonly lag the load curve,
+so historical synchronization rewrites a seven-day rolling tail to apply delayed
+corrections. See `docs/adr/0006`.
 
 ## Authentication
 

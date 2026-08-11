@@ -23,6 +23,15 @@ class ConsumptionReading:
 
 
 @dataclass
+class MeterIndex:
+    """A cumulative active-import meter index from E-REDES."""
+
+    timestamp: datetime
+    value_kwh: float
+    meter_serial: str
+
+
+@dataclass
 class ConsumptionData:
     """Consumption data from E-REDES."""
 

@@ -10,12 +10,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.components.recorder.statistics import valid_statistic_id
 
-from custom_components.eredes.eredes_api.models import ConsumptionReading
+from custom_components.eredes.eredes_api.models import ConsumptionReading, MeterIndex
 from custom_components.eredes.historical import (
     HISTORY_IMPORT_VERSION,
+    LISBON,
     _aggregate_to_hourly_statistics,
     _async_fetch_history,
     _async_verify_statistics_import,
+    _daily_real_totals,
+    _reconcile_with_meter_indexes,
     async_import_historical_data,
     statistic_id,
 )
@@ -71,6 +74,76 @@ def test_aggregate_seeds_cumulative_sum() -> None:
     stats = _aggregate_to_hourly_statistics(readings, initial_sum=10.0)
 
     assert [s["sum"] for s in stats] == [11.0, 12.0]
+
+
+def test_real_meter_indexes_override_disagreeing_daily_load_curve() -> None:
+    """A 24 kWh estimated curve is scaled to the authoritative 12 kWh real day."""
+    # 96 quarter-hours ending from Aug 1 00:15 through Aug 2 00:00 local.
+    readings = [
+        ConsumptionReading(
+            timestamp=(
+                datetime(2026, 8, 1, 0, 15) + timedelta(minutes=15 * index)
+            )
+            .replace(tzinfo=LISBON)
+            .astimezone(UTC),
+            value_wh=250.0,
+        )
+        for index in range(96)
+    ]
+    indexes = [
+        MeterIndex(
+            timestamp=datetime(2026, 8, 1, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10609.0,
+            meter_serial="12345678",
+        ),
+        MeterIndex(
+            timestamp=datetime(2026, 8, 2, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10621.0,
+            meter_serial="12345678",
+        ),
+    ]
+
+    reconciled = _reconcile_with_meter_indexes(readings, indexes)
+
+    assert sum(reading.value_kwh for reading in readings) == 24.0
+    assert sum(reading.value_kwh for reading in reconciled) == 12.0
+    assert all(reading.value_wh == 125.0 for reading in reconciled)
+
+
+def test_real_daily_total_requires_consecutive_midnight_indexes() -> None:
+    """Gaps in the cumulative index never invent per-day consumption."""
+    indexes = [
+        MeterIndex(
+            timestamp=datetime(2026, 8, 1, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=100.0,
+            meter_serial="12345678",
+        ),
+        MeterIndex(
+            timestamp=datetime(2026, 8, 3, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=112.0,
+            meter_serial="12345678",
+        ),
+    ]
+
+    assert _daily_real_totals(indexes) == {}
+
+
+def test_real_daily_total_does_not_cross_meter_replacement() -> None:
+    """A new physical meter reset is not interpreted as negative consumption."""
+    indexes = [
+        MeterIndex(
+            timestamp=datetime(2026, 8, 1, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=1000.0,
+            meter_serial="old",
+        ),
+        MeterIndex(
+            timestamp=datetime(2026, 8, 2, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=5.0,
+            meter_serial="new",
+        ),
+    ]
+
+    assert _daily_real_totals(indexes) == {}
 
 
 @pytest.mark.asyncio
@@ -205,6 +278,7 @@ async def test_partial_recent_history_triggers_full_year_repair() -> None:
 
     client = MagicMock()
     client.get_consumption = AsyncMock(side_effect=fetch_consumption)
+    client.get_meter_indexes = AsyncMock(return_value=[])
     coordinator = SimpleNamespace(cpe=CPE, client=client)
 
     with (
@@ -239,6 +313,8 @@ async def test_current_history_version_resumes_from_latest_statistic() -> None:
     async def executor_job(func, *_args):
         if func.__name__ == "get_last_statistics":
             return {stat_id: [{"start": recent.timestamp(), "sum": 10.0}]}
+        if func.__name__ == "statistics_during_period":
+            return {stat_id: [{"sum": 5.0}]}
         raise AssertionError(f"Unexpected recorder query: {func.__name__}")
 
     recorder = SimpleNamespace(
@@ -262,7 +338,8 @@ async def test_current_history_version_resumes_from_latest_statistic() -> None:
 
     assert completed is True
     first_start = client.get_consumption.await_args_list[0].args[1]
-    assert first_start >= now - timedelta(days=3)
+    assert first_start >= now - timedelta(days=8)
+    assert first_start <= now - timedelta(days=6)
     store.async_save.assert_not_awaited()
 
 
@@ -309,6 +386,7 @@ async def test_full_repair_removes_stale_shifted_tail_row() -> None:
     )
     store.async_save = AsyncMock()
     coordinator = SimpleNamespace(cpe=CPE, client=MagicMock())
+    coordinator.client.get_meter_indexes = AsyncMock(return_value=[])
     corrected_reading = ConsumptionReading(
         timestamp=corrected_start + timedelta(minutes=15),
         value_wh=1000.0,

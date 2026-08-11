@@ -7,7 +7,7 @@ from .exceptions import (
     ERedesError,
     ERedesRequestRejectedError,
 )
-from .models import ConsumptionData, ConsumptionReading
+from .models import ConsumptionData, ConsumptionReading, MeterIndex
 
 __all__ = [
     "ConsumptionData",
@@ -17,4 +17,5 @@ __all__ = [
     "ERedesConnectionError",
     "ERedesError",
     "ERedesRequestRejectedError",
+    "MeterIndex",
 ]
