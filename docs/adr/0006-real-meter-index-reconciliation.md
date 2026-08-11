@@ -38,17 +38,34 @@ that day's real endpoint becomes available.
    delta across different serial numbers.
 4. Derive a real daily total only from two consecutive local-midnight indexes for the
    same physical meter. Gaps are not interpolated.
-5. When a complete 15-minute day and a real daily total both exist, scale that day's
-   15-minute values proportionally so their sum equals the real cumulative-index
-   delta. This keeps the best available intraday shape while making the Home Assistant
-   daily total authoritative.
-6. When no real daily pair exists yet, retain the 15-minute load curve unchanged.
-7. Rebuild a seven-day rolling statistics tail on normal synchronizations rather than
-   only appending. Seed the cumulative `sum` from the persisted hour immediately
-   before that tail. This allows delayed real readings to correct already-imported
-   estimated days and propagates the correction through subsequent cumulative sums.
-8. Bump the historical import version so existing installations perform one full
-   rebuild and remove already-stored incorrect recent totals.
+5. Treat the cumulative register delta as quantized rather than exact to sub-kWh
+   precision. Each integer-valued tariff register contributes up to roughly ±1 kWh of
+   daily-delta uncertainty because two integer endpoints are subtracted. The accepted
+   envelope is therefore ±1 kWh for simple, ±2 kWh for bi-hourly, ±3 kWh for
+   tri-hourly (`V + P + C`), and ±4 kWh for four-period meters.
+6. When a complete 15-minute day falls outside that envelope, scale its 15-minute
+   values proportionally so their sum equals the real cumulative-index delta. Mark the
+   local calendar day as pending reconciliation in persistent integration storage.
+7. A pending day stays pending across restarts and synchronizations. It is cleared only
+   after a later fetch contains a complete, continuous 15-minute day whose raw total
+   falls inside the applicable quantization envelope. The newly credible raw curve is
+   then used without scaling.
+8. A day with a real cumulative delta but an incomplete/discontinuous 15-minute curve
+   is also marked pending; it is never considered repaired merely because its first and
+   last timestamps exist.
+9. When no real daily pair exists yet, retain the 15-minute load curve unchanged and do
+   not invent a daily total.
+10. Rebuild a seven-day rolling statistics tail on normal synchronizations. If a
+    pending day is older than seven days, extend the rebuild back to the oldest pending
+    day. Seed cumulative `sum` from the persisted hour immediately before that range so
+    any later replacement of scaled data with credible raw data propagates through all
+    subsequent sums.
+11. Bump the historical import version so existing installations perform one full
+    rebuild under the tolerance and pending-day rules.
+12. Persist the latest local calendar day for which a valid consecutive-midnight real
+    delta exists and expose it as a Home Assistant `date` sensor named **Last Real
+    Data Day**. The sensor reports the consumption day, not the endpoint date: a real
+    index at August 8 00:00 paired with August 7 00:00 makes August 7 the sensor value.
 
 ## Register layouts
 
@@ -63,12 +80,21 @@ layout exposed by the portal:
 ## Consequences
 
 Recent days may initially appear using estimated 15-minute totals and then change when
-the corresponding real midnight endpoint arrives. This is intentional: the real
-cumulative register is authoritative for the daily total.
+the corresponding real midnight endpoint arrives. A materially inconsistent day is
+corrected immediately but remains explicitly pending, so it keeps being revisited even
+if E-REDES takes longer than the normal seven-day rolling window to publish credible
+15-minute data.
 
-The real index is commonly displayed with coarser precision than the 15-minute curve,
-so reconciling a day can sacrifice some sub-kWh total precision. The 15-minute relative
-shape is preserved.
+The real index is displayed with coarser precision than the 15-minute curve, so small
+mismatches are expected and are not reconciled. For the observed tri-hourly meter,
+three integer registers (`V`, `P`, `C`) give a ±3 kWh acceptance envelope. Once a
+pending day's raw 15-minute total returns inside that envelope, the flag is removed and
+the more precise raw curve replaces the temporary scaled curve.
 
 A physical meter replacement, missing midnight endpoint, incomplete load-curve day,
 or ambiguous multiple-meter day is left unreconciled rather than guessed.
+
+The **Last Real Data Day** sensor lets automations and dashboards distinguish the
+latest day backed by real E-REDES register data from newer days that still depend only
+on the 15-minute load curve. Its value is persisted so it survives restarts even when
+a subsequent synchronization cannot obtain a newer real endpoint.

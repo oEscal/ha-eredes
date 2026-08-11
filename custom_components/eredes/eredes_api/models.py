@@ -29,6 +29,7 @@ class MeterIndex:
     timestamp: datetime
     value_kwh: float
     meter_serial: str
+    register_count: int = 1
 
 
 @dataclass

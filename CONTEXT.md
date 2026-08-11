@@ -60,10 +60,19 @@ as shown under **Leituras > Consultar histórico**. Valid real readings have `mr
 (operator) or `mrType=2` (customer) and status `activa`/`corrigida`. For the same
 physical meter, the difference between consecutive Europe/Lisbon midnight indexes is
 the authoritative consumption total for the intervening local calendar day. The
-integration keeps the 15-minute curve as the intraday shape but scales it to this real
-daily delta whenever both endpoints exist. Real indexes commonly lag the load curve,
-so historical synchronization rewrites a seven-day rolling tail to apply delayed
-corrections. See `docs/adr/0006`.
+integration compares the raw 15-minute total with this real daily delta. Because each
+cumulative tariff register is integer-valued, the delta carries roughly ±1 kWh of
+quantization uncertainty per register: ±1 kWh for simple, ±2 kWh for bi-hourly, ±3 kWh
+for tri-hourly (`V + P + C`), and ±4 kWh for four-period meters. A complete raw day
+inside that envelope is accepted unchanged. A day outside it is scaled to the real
+delta and persisted as pending reconciliation until a later complete, continuous raw
+15-minute fetch falls back inside the envelope. Incomplete days with a real delta are
+also pending. Historical synchronization normally rewrites a seven-day rolling tail,
+but extends back to the oldest pending day so delayed corrections are never abandoned.
+The latest calendar day with a valid consecutive-midnight real delta is persisted and
+exposed through the **Last Real Data Day** sensor. For example, a latest real meter
+index at 2026-08-08 00:00 makes 2026-08-07 the latest reliable consumption day. See
+`docs/adr/0006`.
 
 ## Authentication
 

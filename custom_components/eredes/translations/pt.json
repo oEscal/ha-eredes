@@ -73,6 +73,9 @@
       },
       "power": {
         "name": "Potencia"
+      },
+      "last_real_data_day": {
+        "name": "Último dia com dados reais"
       }
     }
   }

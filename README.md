@@ -16,7 +16,7 @@ A Home Assistant custom integration to fetch energy consumption data from [E-RED
 
 ## Sensors
 
-The integration creates one device per meter (`E-REDES Meter <CPE suffix>`) with two
+The integration creates one device per meter (`E-REDES Meter <CPE suffix>`) with three
 entities. Entity IDs are derived from the device name, e.g. for a meter whose CPE ends
 in `...MY`:
 
@@ -24,6 +24,7 @@ in `...MY`:
 |--------|-------------------|-------------|------|
 | Daily Energy | `sensor.e_redes_meter_my_daily_energy` | Total consumption for the most recent complete day. Because E-REDES publishes data with a ~24h delay, this reflects **yesterday's** total. | kWh |
 | Power | `sensor.e_redes_meter_my_power` | Average power over the most recent 15-minute interval (derived from that interval's energy). | W |
+| Last Real Data Day | `sensor.e_redes_meter_my_last_real_data_day` | Latest local calendar day whose daily consumption is backed by two consecutive valid real midnight meter indexes. | date |
 
 ## Installation
 

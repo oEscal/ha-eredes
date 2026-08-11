@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -38,6 +38,7 @@ class ERedesCoordinatorData:
     current_power_w: float
     last_reading: ConsumptionReading | None
     last_update: datetime
+    last_real_data_day: date | None
 
 
 class ERedesCoordinator(DataUpdateCoordinator[ERedesCoordinatorData]):
@@ -55,6 +56,7 @@ class ERedesCoordinator(DataUpdateCoordinator[ERedesCoordinatorData]):
         )
         self.config_entry = entry
         self._cpe: str = entry.data[CONF_CPE]
+        self._last_real_data_day: date | None = None
 
         session = async_get_clientsession(hass)
         self._client = ERedesClient(session, str(entry.data[CONF_ACCESS_TOKEN]))
@@ -72,6 +74,12 @@ class ERedesCoordinator(DataUpdateCoordinator[ERedesCoordinatorData]):
     def update_access_token(self, access_token: str) -> None:
         """Update the access token in the client."""
         self._client.update_access_token(access_token)
+
+    def set_last_real_data_day(self, day: date | None) -> None:
+        """Update the latest day backed by consecutive real meter indexes."""
+        self._last_real_data_day = day
+        if self.data is not None:
+            self.async_set_updated_data(replace(self.data, last_real_data_day=day))
 
     async def _async_update_data(self) -> ERedesCoordinatorData:
         """Fetch data from E-REDES."""
@@ -111,6 +119,7 @@ class ERedesCoordinator(DataUpdateCoordinator[ERedesCoordinatorData]):
                 current_power_w=current_power_w,
                 last_reading=last_reading,
                 last_update=now,
+                last_real_data_day=self._last_real_data_day,
             )
 
         except ERedesAuthenticationError as err:

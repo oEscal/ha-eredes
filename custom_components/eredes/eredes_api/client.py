@@ -30,22 +30,21 @@ API_URL = f"{BASE_URL}/ms/reading/data-usage/edm/get"
 LISBON = ZoneInfo("Europe/Lisbon")
 
 
-def _active_import_index_kwh(reading: dict[str, Any]) -> float | None:
-    """Return the cumulative active-import index for one formatted reading.
+def _active_import_index(reading: dict[str, Any]) -> tuple[float, int] | None:
+    """Return cumulative active-import kWh and its quantized register count.
 
     E-REDES exposes different active register layouts depending on the tariff:
     ``S`` for simple, ``V``/``FV`` for bi-hourly, ``V``/``P``/``C`` for
     tri-hourly, and ``SV``/``VN``/``P``/``C`` for four-period meters.
     """
 
-    def _sum_registers(registers: tuple[str, ...]) -> float | None:
-        values: list[float] = []
-        for register in registers:
-            value = reading.get(register)
-            if value is None:
-                continue
-            values.append(float(value))
-        return sum(values) if values else None
+    def _sum_registers(registers: tuple[str, ...]) -> tuple[float, int] | None:
+        values = [
+            float(reading[register])
+            for register in registers
+            if reading.get(register) is not None
+        ]
+        return (sum(values), len(values)) if values else None
 
     if reading.get("S") is not None:
         return _sum_registers(("S",))
@@ -378,16 +377,18 @@ class ERedesClient:
         if not isinstance(timestamp_str, str):
             return None
         local_timestamp = self._parse_timestamp(timestamp_str)
-        value_kwh = _active_import_index_kwh(reading)
-        if local_timestamp is None or value_kwh is None:
+        index_data = _active_import_index(reading)
+        if local_timestamp is None or index_data is None:
             return None
 
+        value_kwh, register_count = index_data
         meter_serial = str(reading.get("eqNumber") or outer_serial)
         timestamp = local_timestamp.replace(tzinfo=LISBON).astimezone(UTC)
         meter_index = MeterIndex(
             timestamp=timestamp,
             value_kwh=value_kwh,
             meter_serial=meter_serial,
+            register_count=register_count,
         )
         rank = (
             1 if mr_type == "1" else 0,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -103,11 +103,88 @@ def test_real_meter_indexes_override_disagreeing_daily_load_curve() -> None:
         ),
     ]
 
-    reconciled = _reconcile_with_meter_indexes(readings, indexes)
+    result = _reconcile_with_meter_indexes(readings, indexes)
 
     assert sum(reading.value_kwh for reading in readings) == 24.0
-    assert sum(reading.value_kwh for reading in reconciled) == 12.0
-    assert all(reading.value_wh == 125.0 for reading in reconciled)
+    assert sum(reading.value_kwh for reading in result.readings) == 12.0
+    assert all(reading.value_wh == 125.0 for reading in result.readings)
+    assert result.pending_days == {date(2026, 8, 1)}
+
+
+def test_real_meter_quantization_tolerance_accepts_three_register_deviation() -> None:
+    """A tri-hourly real index allows up to 3 kWh of endpoint quantization error."""
+    readings = [
+        ConsumptionReading(
+            timestamp=(
+                datetime(2026, 8, 1, 0, 15) + timedelta(minutes=15 * index)
+            )
+            .replace(tzinfo=LISBON)
+            .astimezone(UTC),
+            value_wh=150.0,
+        )
+        for index in range(96)
+    ]
+    indexes = [
+        MeterIndex(
+            timestamp=datetime(2026, 8, 1, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10609.0,
+            meter_serial="12345678",
+            register_count=3,
+        ),
+        MeterIndex(
+            timestamp=datetime(2026, 8, 2, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10621.0,
+            meter_serial="12345678",
+            register_count=3,
+        ),
+    ]
+
+    result = _reconcile_with_meter_indexes(
+        readings,
+        indexes,
+        pending_days={date(2026, 8, 1)},
+    )
+
+    # Raw curve = 14.4 kWh, real integer-register delta = 12 kWh. The 2.4 kWh
+    # difference is within the ±3 kWh quantization envelope, so raw 15-minute
+    # data is now credible and the pending repair is cleared.
+    assert sum(reading.value_kwh for reading in result.readings) == pytest.approx(14.4)
+    assert result.pending_days == set()
+
+
+def test_pending_reconciliation_survives_incomplete_refetch() -> None:
+    """A pending day is never cleared by an incomplete later load-curve fetch."""
+    readings = [
+        ConsumptionReading(
+            timestamp=(
+                datetime(2026, 8, 1, 0, 15) + timedelta(minutes=15 * index)
+            )
+            .replace(tzinfo=LISBON)
+            .astimezone(UTC),
+            value_wh=125.0,
+        )
+        for index in range(96)
+        if index != 40
+    ]
+    indexes = [
+        MeterIndex(
+            timestamp=datetime(2026, 8, 1, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10609.0,
+            meter_serial="12345678",
+            register_count=3,
+        ),
+        MeterIndex(
+            timestamp=datetime(2026, 8, 2, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10621.0,
+            meter_serial="12345678",
+            register_count=3,
+        ),
+    ]
+
+    result = _reconcile_with_meter_indexes(readings, indexes)
+
+    assert result.readings == readings
+    assert result.pending_days == {date(2026, 8, 1)}
 
 
 def test_real_daily_total_requires_consecutive_midnight_indexes() -> None:
@@ -144,6 +221,68 @@ def test_real_daily_total_does_not_cross_meter_replacement() -> None:
     ]
 
     assert _daily_real_totals(indexes) == {}
+
+
+@pytest.mark.asyncio
+async def test_history_sync_publishes_latest_real_consumption_day() -> None:
+    """A real midnight endpoint publishes the preceding reliable calendar day."""
+    plan = SimpleNamespace(
+        start_date=datetime(2026, 8, 7),
+        end_date=datetime(2026, 8, 8),
+        initial_sum=0.0,
+        after=None,
+        needs_full_import=False,
+        pending_days=set(),
+        last_real_data_day=None,
+    )
+    store = MagicMock()
+    store.async_save = AsyncMock()
+    coordinator = SimpleNamespace(
+        cpe=CPE,
+        client=MagicMock(),
+        set_last_real_data_day=MagicMock(),
+    )
+    indexes = [
+        MeterIndex(
+            timestamp=datetime(2026, 8, 7, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=100.0,
+            meter_serial="meter",
+            register_count=3,
+        ),
+        MeterIndex(
+            timestamp=datetime(2026, 8, 8, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=106.0,
+            meter_serial="meter",
+            register_count=3,
+        ),
+    ]
+    reading = ConsumptionReading(
+        timestamp=datetime(2026, 8, 7, 0, 15, tzinfo=LISBON).astimezone(UTC),
+        value_wh=1000.0,
+    )
+
+    with (
+        patch(
+            "custom_components.eredes.historical._async_build_import_plan",
+            AsyncMock(return_value=(plan, store)),
+        ),
+        patch(
+            "custom_components.eredes.historical._async_fetch_history",
+            AsyncMock(return_value=[reading]),
+        ),
+        patch(
+            "custom_components.eredes.historical._async_fetch_meter_indexes",
+            AsyncMock(return_value=indexes),
+        ),
+        patch(
+            "custom_components.eredes.historical._async_persist_statistics",
+            AsyncMock(return_value=True),
+        ),
+    ):
+        completed = await async_import_historical_data(MagicMock(), coordinator)
+
+    assert completed is True
+    coordinator.set_last_real_data_day.assert_called_once_with(date(2026, 8, 7))
 
 
 @pytest.mark.asyncio
@@ -297,7 +436,130 @@ async def test_partial_recent_history_triggers_full_year_repair() -> None:
     assert metadata["unit_class"] == "energy"
     first_start = client.get_consumption.await_args_list[0].args[1]
     assert first_start <= now - timedelta(days=364)
-    store.async_save.assert_awaited_once_with({"version": HISTORY_IMPORT_VERSION})
+    store.async_save.assert_awaited_once_with(
+        {
+            "version": HISTORY_IMPORT_VERSION,
+            "pending_reconciliation_days": [],
+            "last_real_data_day": None,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_reconciliation_extends_refetch_window() -> None:
+    """A flagged old day keeps being fetched even after it leaves the rolling tail."""
+    now = datetime.now()
+    recent = (
+        datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
+        - timedelta(hours=1)
+    )
+    pending_day = (now - timedelta(days=30)).date()
+    stat_id = statistic_id(CPE)
+
+    async def executor_job(func, *_args):
+        if func.__name__ == "get_last_statistics":
+            return {stat_id: [{"start": recent.timestamp(), "sum": 10.0}]}
+        if func.__name__ == "statistics_during_period":
+            return {stat_id: [{"sum": 5.0}]}
+        raise AssertionError(f"Unexpected recorder query: {func.__name__}")
+
+    recorder = SimpleNamespace(
+        async_add_executor_job=AsyncMock(side_effect=executor_job)
+    )
+    store = MagicMock()
+    store.async_load = AsyncMock(
+        return_value={
+            "version": HISTORY_IMPORT_VERSION,
+            "pending_reconciliation_days": [pending_day.isoformat()],
+        }
+    )
+    store.async_save = AsyncMock()
+    client = MagicMock()
+    client.get_consumption = AsyncMock(return_value=SimpleNamespace(readings=[]))
+    coordinator = SimpleNamespace(cpe=CPE, client=client)
+
+    with (
+        patch(
+            "custom_components.eredes.historical.get_instance", return_value=recorder
+        ),
+        patch("custom_components.eredes.historical.Store", return_value=store),
+        patch("custom_components.eredes.historical.async_add_external_statistics"),
+    ):
+        completed = await async_import_historical_data(MagicMock(), coordinator)
+
+    assert completed is True
+    first_start = client.get_consumption.await_args_list[0].args[1]
+    assert first_start.date() <= pending_day
+
+
+@pytest.mark.asyncio
+async def test_reconciled_day_is_persisted_as_pending() -> None:
+    """A corrected day remains explicitly flagged for a later raw-data refetch."""
+    recorder = SimpleNamespace(
+        async_add_executor_job=AsyncMock(return_value={}),
+    )
+    store = MagicMock()
+    store.async_load = AsyncMock(return_value=None)
+    store.async_save = AsyncMock()
+    coordinator = SimpleNamespace(
+        cpe=CPE,
+        client=MagicMock(),
+        set_last_real_data_day=MagicMock(),
+    )
+    readings = [
+        ConsumptionReading(
+            timestamp=(
+                datetime(2026, 8, 1, 0, 15) + timedelta(minutes=15 * index)
+            )
+            .replace(tzinfo=LISBON)
+            .astimezone(UTC),
+            value_wh=250.0,
+        )
+        for index in range(96)
+    ]
+    indexes = [
+        MeterIndex(
+            timestamp=datetime(2026, 8, 1, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10609.0,
+            meter_serial="12345678",
+            register_count=3,
+        ),
+        MeterIndex(
+            timestamp=datetime(2026, 8, 2, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10621.0,
+            meter_serial="12345678",
+            register_count=3,
+        ),
+    ]
+
+    with (
+        patch(
+            "custom_components.eredes.historical.get_instance", return_value=recorder
+        ),
+        patch("custom_components.eredes.historical.Store", return_value=store),
+        patch(
+            "custom_components.eredes.historical._async_fetch_history",
+            AsyncMock(return_value=readings),
+        ),
+        patch(
+            "custom_components.eredes.historical._async_fetch_meter_indexes",
+            AsyncMock(return_value=indexes),
+        ),
+        patch(
+            "custom_components.eredes.historical._async_persist_statistics",
+            AsyncMock(return_value=True),
+        ),
+    ):
+        completed = await async_import_historical_data(MagicMock(), coordinator)
+
+    assert completed is True
+    store.async_save.assert_awaited_once_with(
+        {
+            "version": HISTORY_IMPORT_VERSION,
+            "pending_reconciliation_days": ["2026-08-01"],
+            "last_real_data_day": "2026-08-01",
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -321,11 +583,21 @@ async def test_current_history_version_resumes_from_latest_statistic() -> None:
         async_add_executor_job=AsyncMock(side_effect=executor_job)
     )
     store = MagicMock()
-    store.async_load = AsyncMock(return_value={"version": HISTORY_IMPORT_VERSION})
+    restored_real_day = (now - timedelta(days=4)).date()
+    store.async_load = AsyncMock(
+        return_value={
+            "version": HISTORY_IMPORT_VERSION,
+            "last_real_data_day": restored_real_day.isoformat(),
+        }
+    )
     store.async_save = AsyncMock()
     client = MagicMock()
     client.get_consumption = AsyncMock(return_value=SimpleNamespace(readings=[]))
-    coordinator = SimpleNamespace(cpe=CPE, client=client)
+    coordinator = SimpleNamespace(
+        cpe=CPE,
+        client=client,
+        set_last_real_data_day=MagicMock(),
+    )
 
     with (
         patch(
@@ -340,6 +612,7 @@ async def test_current_history_version_resumes_from_latest_statistic() -> None:
     first_start = client.get_consumption.await_args_list[0].args[1]
     assert first_start >= now - timedelta(days=8)
     assert first_start <= now - timedelta(days=6)
+    coordinator.set_last_real_data_day.assert_called_once_with(restored_real_day)
     store.async_save.assert_not_awaited()
 
 

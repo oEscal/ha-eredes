@@ -191,6 +191,7 @@ def test_parse_real_meter_indexes_uses_valid_active_import_registers() -> None:
 
     assert [index.value_kwh for index in indexes] == [10609.0, 10621.0]
     assert indexes[0].meter_serial == "12345678"
+    assert [index.register_count for index in indexes] == [3, 3]
     # Midnight in Lisbon is 23:00 UTC during WEST.
     assert indexes[0].timestamp.isoformat() == "2026-07-31T23:00:00+00:00"
 
@@ -237,8 +238,9 @@ def test_parse_real_meter_indexes_supports_simple_and_bihourly_registers() -> No
     )
 
     assert sorted(
-        (index.meter_serial, index.value_kwh) for index in indexes
+        (index.meter_serial, index.value_kwh, index.register_count)
+        for index in indexes
     ) == [
-        ("bi", 100.0),
-        ("simple", 100.5),
+        ("bi", 100.0, 2),
+        ("simple", 100.5, 1),
     ]

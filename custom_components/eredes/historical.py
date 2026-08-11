@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from homeassistant.components.recorder import get_instance  # type: ignore[attr-defined]
@@ -44,9 +44,11 @@ TOTAL_HISTORY_DAYS = 365  # 1 year
 # version bump forces one successful full-window rebuild before append/resume
 # mode is allowed again. This repairs older partial imports without repeatedly
 # downloading a year of data on every Home Assistant restart.
-HISTORY_IMPORT_VERSION = 5
+HISTORY_IMPORT_VERSION = 6
 HISTORY_STORAGE_VERSION = 1
 HISTORY_STORAGE_KEY_PREFIX = f"{DOMAIN}.historical_import"
+HISTORY_PENDING_DAYS_KEY = "pending_reconciliation_days"
+HISTORY_LAST_REAL_DATA_DAY_KEY = "last_real_data_day"
 
 # E-REDES request boundaries are Lisbon wall-clock values.
 LISBON = ZoneInfo("Europe/Lisbon")
@@ -68,6 +70,71 @@ class _HistoryImportPlan:
     initial_sum: float
     after: datetime | None
     needs_full_import: bool
+    pending_days: set[date]
+    last_real_data_day: date | None
+
+
+@dataclass(frozen=True, slots=True)
+class _DailyRealTotal:
+    """Real daily delta and its integer-register quantization tolerance."""
+
+    value_kwh: float
+    tolerance_kwh: float
+
+
+@dataclass(slots=True)
+class _ReconciliationResult:
+    """Reconciled readings and days that still require a later raw refetch."""
+
+    readings: list[ConsumptionReading]
+    pending_days: set[date]
+
+
+def _pending_days_from_state(state: Any) -> set[date]:
+    """Parse persisted reconciliation days, ignoring malformed state entries."""
+    if not isinstance(state, dict):
+        return set()
+    raw_days = state.get(HISTORY_PENDING_DAYS_KEY, [])
+    if not isinstance(raw_days, list):
+        return set()
+
+    pending_days: set[date] = set()
+    for raw_day in raw_days:
+        if not isinstance(raw_day, str):
+            continue
+        try:
+            pending_days.add(date.fromisoformat(raw_day))
+        except ValueError:
+            _LOGGER.warning("Ignoring invalid pending reconciliation date %r", raw_day)
+    return pending_days
+
+
+def _last_real_data_day_from_state(state: Any) -> date | None:
+    """Parse the persisted latest reliable calendar day."""
+    if not isinstance(state, dict):
+        return None
+    raw_day = state.get(HISTORY_LAST_REAL_DATA_DAY_KEY)
+    if not isinstance(raw_day, str):
+        return None
+    try:
+        return date.fromisoformat(raw_day)
+    except ValueError:
+        _LOGGER.warning("Ignoring invalid last real data date %r", raw_day)
+        return None
+
+
+def _history_state(
+    pending_days: set[date],
+    last_real_data_day: date | None,
+) -> dict[str, Any]:
+    """Return persisted state for a successful historical synchronization."""
+    return {
+        "version": HISTORY_IMPORT_VERSION,
+        HISTORY_PENDING_DAYS_KEY: sorted(day.isoformat() for day in pending_days),
+        HISTORY_LAST_REAL_DATA_DAY_KEY: (
+            last_real_data_day.isoformat() if last_real_data_day else None
+        ),
+    }
 
 
 def statistic_id(cpe: str) -> str:
@@ -83,7 +150,7 @@ async def _async_build_import_plan(
     hass: HomeAssistant,
     coordinator: ERedesCoordinator,
     stat_id: str,
-) -> tuple[_HistoryImportPlan, Store[dict[str, int]]]:
+) -> tuple[_HistoryImportPlan, Store[dict[str, Any]]]:
     """Resolve whether this run must rebuild the year or can resume."""
     recorder = get_instance(hass)
     last_stats = await recorder.async_add_executor_job(
@@ -95,12 +162,16 @@ async def _async_build_import_plan(
         {"sum"},
     )
 
-    store: Store[dict[str, int]] = Store(
+    store: Store[dict[str, Any]] = Store(
         hass,
         HISTORY_STORAGE_VERSION,
         f"{HISTORY_STORAGE_KEY_PREFIX}_{coordinator.cpe.lower()}",
     )
     import_state = await store.async_load()
+    pending_days = _pending_days_from_state(import_state)
+    last_real_data_day = _last_real_data_day_from_state(import_state)
+    if last_real_data_day is not None:
+        coordinator.set_last_real_data_day(last_real_data_day)
     full_import_current = (
         isinstance(import_state, dict)
         and import_state.get("version") == HISTORY_IMPORT_VERSION
@@ -131,6 +202,8 @@ async def _async_build_import_plan(
                 initial_sum=0.0,
                 after=None,
                 needs_full_import=True,
+                pending_days=pending_days,
+                last_real_data_day=last_real_data_day,
             ),
             store,
         )
@@ -138,15 +211,16 @@ async def _async_build_import_plan(
     last_row = last_stats[stat_id][0]
     last_start = datetime.fromtimestamp(last_row["start"], tz=UTC)
     last_start_local = last_start.astimezone(LISBON).replace(tzinfo=None)
-    start_date = max(
-        full_start_local,
-        (last_start_local - timedelta(days=REFETCH_BUFFER_DAYS)).replace(
-            hour=0,
-            minute=0,
-            second=0,
-            microsecond=0,
-        ),
+    rolling_start = (last_start_local - timedelta(days=REFETCH_BUFFER_DAYS)).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
     )
+    if pending_days:
+        pending_start = datetime.combine(min(pending_days), datetime.min.time())
+        rolling_start = min(rolling_start, pending_start)
+    start_date = max(full_start_local, rolling_start)
 
     # The rolling tail is rewritten, not merely appended. Seed its cumulative
     # sum from the last persisted hour before the rebuilt range so any daily
@@ -177,6 +251,8 @@ async def _async_build_import_plan(
             initial_sum=initial_sum,
             after=None,
             needs_full_import=False,
+            pending_days=pending_days,
+            last_real_data_day=last_real_data_day,
         ),
         store,
     )
@@ -345,8 +421,8 @@ async def _async_fetch_meter_indexes(
     return indexes
 
 
-def _daily_real_totals(indexes: list[MeterIndex]) -> dict[date, float]:
-    """Derive authoritative per-day kWh from consecutive midnight indexes."""
+def _daily_real_totals(indexes: list[MeterIndex]) -> dict[date, _DailyRealTotal]:
+    """Derive real daily kWh and quantization tolerance from midnight indexes."""
     by_meter: dict[str, dict[date, MeterIndex]] = {}
     for index in indexes:
         local_timestamp = index.timestamp.astimezone(LISBON)
@@ -359,7 +435,7 @@ def _daily_real_totals(indexes: list[MeterIndex]) -> dict[date, float]:
             continue
         by_meter.setdefault(index.meter_serial, {})[local_timestamp.date()] = index
 
-    candidates: dict[date, list[float]] = {}
+    candidates: dict[date, list[_DailyRealTotal]] = {}
     for endpoints in by_meter.values():
         for day, start_index in endpoints.items():
             next_index = endpoints.get(day + timedelta(days=1))
@@ -368,7 +444,17 @@ def _daily_real_totals(indexes: list[MeterIndex]) -> dict[date, float]:
             consumption_kwh = next_index.value_kwh - start_index.value_kwh
             if consumption_kwh < 0:
                 continue
-            candidates.setdefault(day, []).append(consumption_kwh)
+            register_count = max(
+                start_index.register_count,
+                next_index.register_count,
+                1,
+            )
+            candidates.setdefault(day, []).append(
+                _DailyRealTotal(
+                    value_kwh=consumption_kwh,
+                    tolerance_kwh=float(register_count),
+                )
+            )
 
     # Multiple meters supplying a delta for the same day is ambiguous (for
     # example around a physical meter replacement), so do not guess by adding or
@@ -380,20 +466,60 @@ def _daily_real_totals(indexes: list[MeterIndex]) -> dict[date, float]:
     }
 
 
+def _is_complete_load_curve_day(
+    readings: list[ConsumptionReading],
+    positions: list[int],
+    day: date,
+) -> bool:
+    """Return whether positions contain every 15-minute interval of a local day."""
+    expected_start = datetime.combine(day, datetime.min.time()).replace(tzinfo=LISBON)
+    expected_end = datetime.combine(
+        day + timedelta(days=1), datetime.min.time()
+    ).replace(tzinfo=LISBON)
+    expected_first_end_utc = expected_start.astimezone(UTC) + READING_INTERVAL
+    expected_end_utc = expected_end.astimezone(UTC)
+    expected_count = int(
+        (expected_end_utc - expected_start.astimezone(UTC)) / READING_INTERVAL
+    )
+    if len(positions) != expected_count:
+        _LOGGER.debug(
+            "Not reconciling incomplete load-curve day %s: got %d of %d intervals",
+            day.isoformat(),
+            len(positions),
+            expected_count,
+        )
+        return False
+
+    actual_timestamps = [readings[position].timestamp for position in positions]
+    for index, timestamp in enumerate(actual_timestamps):
+        if timestamp != expected_first_end_utc + READING_INTERVAL * index:
+            _LOGGER.debug(
+                "Not reconciling discontinuous load-curve day %s at %s",
+                day.isoformat(),
+                timestamp.isoformat(),
+            )
+            return False
+    return actual_timestamps[-1] == expected_end_utc
+
+
 def _reconcile_with_meter_indexes(
     readings: list[ConsumptionReading],
     indexes: list[MeterIndex],
-) -> list[ConsumptionReading]:
-    """Scale each complete 15-minute day to its valid real cumulative delta.
+    *,
+    pending_days: set[date] | None = None,
+) -> _ReconciliationResult:
+    """Reconcile implausible complete days and track them until raw data recovers.
 
-    The quarter-hour curve remains useful for the intraday shape. When a real
-    pair of midnight meter indexes exists, however, its daily delta is the
-    authoritative total. Scaling preserves the 15-minute/hourly shape while
-    making Home Assistant's daily energy agree exactly with the real reading.
+    Real cumulative indexes are integer-valued per tariff register, so their
+    daily delta has a quantization envelope of roughly ±1 kWh per register. Raw
+    15-minute data inside that envelope is accepted as the more precise source.
+    A day outside the envelope is scaled to the real delta and kept pending until
+    a later complete refetch falls back inside the envelope.
     """
+    remaining_pending = set(pending_days or ())
     daily_totals = _daily_real_totals(indexes)
     if not daily_totals or not readings:
-        return readings
+        return _ReconciliationResult(readings, remaining_pending)
 
     groups: dict[date, list[int]] = {}
     for position, reading in enumerate(readings):
@@ -402,45 +528,38 @@ def _reconcile_with_meter_indexes(
 
     reconciled = list(readings)
     corrected_days = 0
-    for day, target_kwh in daily_totals.items():
+    resolved_days = 0
+    for day, real_total in daily_totals.items():
         positions = groups.get(day)
-        if not positions:
-            continue
-
-        first_start = (
-            readings[positions[0]].timestamp - READING_INTERVAL
-        ).astimezone(LISBON)
-        last_end = readings[positions[-1]].timestamp.astimezone(LISBON)
-        expected_start = datetime.combine(day, datetime.min.time()).replace(
-            tzinfo=LISBON
-        )
-        expected_end = datetime.combine(
-            day + timedelta(days=1), datetime.min.time()
-        ).replace(tzinfo=LISBON)
-        if first_start != expected_start or last_end != expected_end:
-            _LOGGER.debug(
-                "Not reconciling incomplete load-curve day %s (%s to %s)",
-                day.isoformat(),
-                first_start.isoformat(),
-                last_end.isoformat(),
-            )
+        if not positions or not _is_complete_load_curve_day(readings, positions, day):
+            remaining_pending.add(day)
             continue
 
         curve_kwh = sum(readings[position].value_kwh for position in positions)
-        if curve_kwh == 0:
-            if target_kwh != 0:
-                _LOGGER.warning(
-                    "Cannot distribute %.3f kWh real total for %s because its "
-                    "15-minute load curve sums to zero",
-                    target_kwh,
+        deviation_kwh = abs(curve_kwh - real_total.value_kwh)
+        if deviation_kwh <= real_total.tolerance_kwh:
+            if day in remaining_pending:
+                remaining_pending.remove(day)
+                resolved_days += 1
+                _LOGGER.info(
+                    "Raw load curve for %s now agrees with real meter indexes "
+                    "within ±%.0f kWh; reconciliation no longer pending",
                     day.isoformat(),
+                    real_total.tolerance_kwh,
                 )
             continue
 
-        if abs(curve_kwh - target_kwh) <= 1e-9:
+        remaining_pending.add(day)
+        if curve_kwh == 0:
+            _LOGGER.warning(
+                "Cannot distribute %.3f kWh real total for %s because its "
+                "15-minute load curve sums to zero",
+                real_total.value_kwh,
+                day.isoformat(),
+            )
             continue
 
-        scale = target_kwh / curve_kwh
+        scale = real_total.value_kwh / curve_kwh
         for position in positions:
             reconciled[position] = replace(
                 readings[position],
@@ -448,18 +567,22 @@ def _reconcile_with_meter_indexes(
             )
         corrected_days += 1
         _LOGGER.info(
-            "Reconciled %s load curve from %.3f kWh to %.3f kWh using real "
-            "meter indexes",
+            "Reconciled %s load curve from %.3f kWh to %.3f kWh; raw deviation "
+            "%.3f kWh exceeds ±%.0f kWh quantization tolerance",
             day.isoformat(),
             curve_kwh,
-            target_kwh,
+            real_total.value_kwh,
+            deviation_kwh,
+            real_total.tolerance_kwh,
         )
 
     if corrected_days:
         _LOGGER.info(
             "Reconciled %d historical day(s) to real meter indexes", corrected_days
         )
-    return reconciled
+    if resolved_days:
+        _LOGGER.info("Resolved %d pending reconciliation day(s)", resolved_days)
+    return _ReconciliationResult(reconciled, remaining_pending)
 
 
 async def _async_verify_statistics_import(
@@ -594,8 +717,21 @@ async def async_import_historical_data(
     if meter_indexes is None:
         return False
 
+    real_daily_totals = _daily_real_totals(meter_indexes)
+    last_real_data_day = plan.last_real_data_day
+    if real_daily_totals:
+        newest_real_day = max(real_daily_totals)
+        if last_real_data_day is None or newest_real_day > last_real_data_day:
+            last_real_data_day = newest_real_day
+        coordinator.set_last_real_data_day(last_real_data_day)
+
     all_readings.sort(key=lambda r: r.timestamp)
-    all_readings = _reconcile_with_meter_indexes(all_readings, meter_indexes)
+    reconciliation = _reconcile_with_meter_indexes(
+        all_readings,
+        meter_indexes,
+        pending_days=plan.pending_days,
+    )
+    all_readings = reconciliation.readings
 
     # On a full rebuild `plan.after` is None and all rows in the year are
     # regenerated. Persistence replaces the old external statistic entirely so
@@ -630,8 +766,10 @@ async def async_import_historical_data(
     ):
         return False
 
+    await store.async_save(
+        _history_state(reconciliation.pending_days, last_real_data_day)
+    )
     if plan.needs_full_import:
-        await store.async_save({"version": HISTORY_IMPORT_VERSION})
         _LOGGER.debug(
             "Completed full history import version %d for %s",
             HISTORY_IMPORT_VERSION,

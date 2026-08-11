@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import (
@@ -16,7 +16,7 @@ from homeassistant.const import UnitOfEnergy, UnitOfPower
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, SENSOR_ENERGY, SENSOR_POWER
+from .const import DOMAIN, SENSOR_ENERGY, SENSOR_LAST_REAL_DATA_DAY, SENSOR_POWER
 from .coordinator import ERedesCoordinator, ERedesCoordinatorData
 
 if TYPE_CHECKING:
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 class ERedesSensorEntityDescription(SensorEntityDescription):
     """Describes E-REDES sensor entity."""
 
-    value_fn: Callable[[ERedesCoordinatorData], float | None]
+    value_fn: Callable[[ERedesCoordinatorData], float | date | None]
 
 
 SENSOR_DESCRIPTIONS: tuple[ERedesSensorEntityDescription, ...] = (
@@ -55,6 +55,13 @@ SENSOR_DESCRIPTIONS: tuple[ERedesSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         suggested_display_precision=0,
         value_fn=lambda data: data.current_power_w,
+    ),
+    ERedesSensorEntityDescription(
+        key=SENSOR_LAST_REAL_DATA_DAY,
+        translation_key="last_real_data_day",
+        name="Last Real Data Day",
+        device_class=SensorDeviceClass.DATE,
+        value_fn=lambda data: data.last_real_data_day,
     ),
 )
 
@@ -96,7 +103,7 @@ class ERedesSensor(CoordinatorEntity[ERedesCoordinator], SensorEntity):
         )
 
     @property
-    def native_value(self) -> float | None:
+    def native_value(self) -> float | date | None:
         """Return the state of the sensor."""
         if self.coordinator.data is None:
             return None  # type: ignore[unreachable]

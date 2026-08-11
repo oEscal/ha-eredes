@@ -73,6 +73,9 @@
       },
       "power": {
         "name": "Power"
+      },
+      "last_real_data_day": {
+        "name": "Last Real Data Day"
       }
     }
   }
