@@ -55,6 +55,21 @@ def _active_import_index(reading: dict[str, Any]) -> tuple[float, int] | None:
     return _sum_registers(("V", "P", "C"))
 
 
+def _deduplicate_exact_readings(
+    readings: list[ConsumptionReading],
+) -> list[ConsumptionReading]:
+    """Collapse repeated physical readings while preserving conflicting values."""
+    unique_readings: list[ConsumptionReading] = []
+    seen: set[tuple[datetime, float]] = set()
+    for reading in readings:
+        key = (reading.timestamp, reading.value_wh)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_readings.append(reading)
+    return unique_readings
+
+
 def _to_utc_series(timestamps: list[datetime]) -> list[datetime]:
     """Convert naive Europe/Lisbon wall-clock timestamps to aware UTC.
 
@@ -567,12 +582,17 @@ class ERedesClient:
         except (KeyError, TypeError, ValueError) as ex:
             raise ERedesError(f"Failed to parse consumption response: {ex}") from ex
 
-        # Sort readings by timestamp
+        # Sort readings by timestamp and collapse exact duplicates. The EDM
+        # response can repeat the same A+ series under multiple utility-device
+        # groups; those rows describe the same physical quarter-hour and must
+        # not be counted twice. Same-timestamp rows with different values are
+        # retained so reconciliation can treat them as ambiguous rather than
+        # silently choosing one.
         readings.sort(key=lambda r: r.timestamp)
 
         return ConsumptionData(
             cpe=cpe,
-            readings=readings,
+            readings=_deduplicate_exact_readings(readings),
             start_date=start_date,
             end_date=end_date,
         )

@@ -70,11 +70,13 @@ delta and persisted as pending reconciliation until a later complete, continuous
 also pending. Historical synchronization normally rewrites a seven-day rolling tail,
 but extends back to the oldest pending day so delayed corrections are never abandoned.
 The latest calendar day with a valid consecutive-midnight real delta is persisted and
-exposed through the **Last Real Data Day** sensor. Separately, every complete raw day
-that falls inside the applicable tolerance is persisted as a matching day; the newest
-of these is exposed through **Last Matching 15-Min Data Day**. A later refetch that
-makes a previously matching day incomplete or inconsistent removes it from that set,
-so the sensor can move backward. For example, a latest real meter index at
+exposed through the **Last Real Data Day** sensor. Exact duplicate `(timestamp, value)`
+rows from repeated API `A+` groups are collapsed before totals are evaluated; conflicting
+duplicates are kept as ambiguous. Separately, every complete 15-minute day that falls
+inside the applicable tolerance without real-total scaling is persisted as a matching
+day; the newest is exposed through **Last Matching 15-Min Data Day**. A later refetch
+that makes a previously matching day incomplete or inconsistent removes it from that
+set, so the sensor can move backward. For example, a latest real meter index at
 2026-08-08 00:00 makes 2026-08-07 the latest reliable consumption day. See
 `docs/adr/0006`.
 

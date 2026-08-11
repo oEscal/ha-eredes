@@ -44,7 +44,7 @@ TOTAL_HISTORY_DAYS = 365  # 1 year
 # version bump forces one successful full-window rebuild before append/resume
 # mode is allowed again. This repairs older partial imports without repeatedly
 # downloading a year of data on every Home Assistant restart.
-HISTORY_IMPORT_VERSION = 8
+HISTORY_IMPORT_VERSION = 9
 HISTORY_STORAGE_VERSION = 1
 HISTORY_STORAGE_KEY_PREFIX = f"{DOMAIN}.historical_import"
 HISTORY_PENDING_DAYS_KEY = "pending_reconciliation_days"
@@ -537,6 +537,63 @@ def _is_complete_load_curve_day(
     return True
 
 
+def _normalize_duplicate_intervals(
+    readings: list[ConsumptionReading],
+    positions: list[int],
+) -> tuple[dict[int, float], float, bool]:
+    """Normalize identical duplicate timestamps to one physical interval.
+
+    E-REDES can repeat the same quarter-hour row. Identical duplicates are a
+    transport/API duplication artifact, so their energy must count only once.
+    The returned per-position values split that single interval equally across
+    its duplicate rows, preserving the existing row shape while preventing
+    double counting. Different values for the same timestamp are ambiguous.
+    """
+    by_timestamp: dict[datetime, list[int]] = {}
+    for position in positions:
+        by_timestamp.setdefault(readings[position].timestamp, []).append(position)
+
+    normalized_wh: dict[int, float] = {}
+    total_kwh = 0.0
+    has_conflicts = False
+    for duplicate_positions in by_timestamp.values():
+        values = [readings[position].value_wh for position in duplicate_positions]
+        first_value = values[0]
+        if any(abs(value - first_value) > 1e-9 for value in values[1:]):
+            has_conflicts = True
+            continue
+
+        total_kwh += first_value / 1000
+        per_row_wh = first_value / len(duplicate_positions)
+        for position in duplicate_positions:
+            normalized_wh[position] = per_row_wh
+
+    return normalized_wh, total_kwh, has_conflicts
+
+
+def _prepare_day_curve(
+    readings: list[ConsumptionReading],
+    reconciled: list[ConsumptionReading],
+    positions: list[int],
+) -> tuple[float, bool]:
+    """Normalize exact duplicates and return the physical daily total."""
+    normalized_wh, curve_kwh, has_duplicate_conflicts = (
+        _normalize_duplicate_intervals(readings, positions)
+    )
+    if has_duplicate_conflicts:
+        return (
+            sum(readings[position].value_kwh for position in positions),
+            True,
+        )
+
+    for position, value_wh in normalized_wh.items():
+        reconciled[position] = replace(
+            readings[position],
+            value_wh=value_wh,
+        )
+    return curve_kwh, False
+
+
 def _reconcile_with_meter_indexes(
     readings: list[ConsumptionReading],
     indexes: list[MeterIndex],
@@ -573,9 +630,17 @@ def _reconcile_with_meter_indexes(
             remaining_matching.discard(day)
             continue
 
-        curve_kwh = sum(readings[position].value_kwh for position in positions)
+        curve_kwh, has_duplicate_conflicts = _prepare_day_curve(
+            readings,
+            reconciled,
+            positions,
+        )
+        if has_duplicate_conflicts:
+            remaining_pending.add(day)
+            remaining_matching.discard(day)
+
         deviation_kwh = abs(curve_kwh - real_total.value_kwh)
-        if deviation_kwh <= real_total.tolerance_kwh:
+        if not has_duplicate_conflicts and deviation_kwh <= real_total.tolerance_kwh:
             remaining_matching.add(day)
             if day in remaining_pending:
                 remaining_pending.remove(day)
@@ -601,9 +666,14 @@ def _reconcile_with_meter_indexes(
 
         scale = real_total.value_kwh / curve_kwh
         for position in positions:
+            base_wh = (
+                reconciled[position].value_wh
+                if not has_duplicate_conflicts
+                else readings[position].value_wh
+            )
             reconciled[position] = replace(
                 readings[position],
-                value_wh=readings[position].value_wh * scale,
+                value_wh=base_wh * scale,
             )
         corrected_days += 1
         _LOGGER.info(

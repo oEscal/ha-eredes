@@ -247,6 +247,68 @@ def test_unparseable_timestamp_is_skipped() -> None:
     assert _parse(_response([_curve(timestamp="05/01/2026 00:15")])) == []
 
 
+def test_identical_duplicate_groups_are_deduplicated() -> None:
+    """Repeated A+ groups with identical data represent one physical series."""
+    curves = [
+        _curve("2026-01-05T00:15:00Z", 0.05),
+        _curve("2026-01-05T00:30:00Z", 0.06),
+    ]
+    response = {
+        "Body": {
+            "Success": True,
+            "Result": {
+                "utilitiesDevices": [
+                    {"meterLoadCurves": [{"register": "A+", "loadCurves": curves}]},
+                    {"meterLoadCurves": [{"register": "A+", "loadCurves": curves}]},
+                ]
+            },
+        }
+    }
+
+    readings = _parse(response)
+
+    assert [(reading.timestamp, reading.value_kwh) for reading in readings] == [
+        (datetime(2026, 1, 5, 0, 15, tzinfo=UTC), pytest.approx(0.05)),
+        (datetime(2026, 1, 5, 0, 30, tzinfo=UTC), pytest.approx(0.06)),
+    ]
+
+
+def test_conflicting_duplicate_groups_are_preserved() -> None:
+    """Same timestamp with different energy remains visible as ambiguous data."""
+    response = {
+        "Body": {
+            "Success": True,
+            "Result": {
+                "utilitiesDevices": [
+                    {
+                        "meterLoadCurves": [
+                            {
+                                "register": "A+",
+                                "loadCurves": [_curve("2026-01-05T00:15:00Z", 0.05)],
+                            }
+                        ]
+                    },
+                    {
+                        "meterLoadCurves": [
+                            {
+                                "register": "A+",
+                                "loadCurves": [_curve("2026-01-05T00:15:00Z", 0.07)],
+                            }
+                        ]
+                    },
+                ]
+            },
+        }
+    }
+
+    readings = _parse(response)
+
+    assert [reading.value_kwh for reading in readings] == [
+        pytest.approx(0.05),
+        pytest.approx(0.07),
+    ]
+
+
 def test_readings_are_sorted_by_timestamp() -> None:
     """Readings come back in chronological order regardless of wire order."""
     readings = _parse(

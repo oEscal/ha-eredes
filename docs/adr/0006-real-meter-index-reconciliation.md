@@ -52,8 +52,10 @@ that day's real endpoint becomes available.
    then used without scaling.
 8. A day with a real cumulative delta but an incomplete/discontinuous 15-minute curve
    is also marked pending. Completeness is based on coverage of every expected local
-   15-minute timestamp, not the raw row count: duplicate rows for an already-covered
-   quarter-hour do not make an otherwise complete day unreconcilable.
+   15-minute timestamp, not the raw row count. The API parser collapses exact duplicate
+   `(timestamp, value)` rows returned through repeated `A+` groups; same-timestamp rows
+   with different values remain visible as ambiguous data and do not qualify as a
+   matching day.
 9. When no real daily pair exists yet, retain the 15-minute load curve unchanged and do
    not invent a daily total.
 10. Rebuild a seven-day rolling statistics tail on normal synchronizations. If a
@@ -67,11 +69,12 @@ that day's real endpoint becomes available.
     delta exists and expose it as a Home Assistant `date` sensor named **Last Real
     Data Day**. The sensor reports the consumption day, not the endpoint date: a real
     index at August 8 00:00 paired with August 7 00:00 makes August 7 the sensor value.
-13. Persist the set of days whose complete **raw** 15-minute curve already falls inside
-    the applicable real-index tolerance and expose the newest as **Last Matching
-    15-Min Data Day**. Reconciled/scaled days do not qualify. Re-evaluating a day as
-    incomplete or outside tolerance removes it from the set, so the sensor may move
-    backward when E-REDES revises its data.
+13. Persist the set of days whose complete 15-minute curve, after removing only exact
+    API duplicate rows, already falls inside the applicable real-index tolerance and
+    expose the newest as **Last Matching 15-Min Data Day**. Reconciled/scaled days do
+    not qualify. Re-evaluating a day as incomplete, ambiguous, or outside tolerance
+    removes it from the set, so the sensor may move backward when E-REDES revises its
+    data.
 
 ## Register layouts
 
@@ -105,6 +108,8 @@ latest day backed by real E-REDES register data from newer days that still depen
 on the 15-minute load curve. Its value is persisted so it survives restarts even when
 a subsequent synchronization cannot obtain a newer real endpoint.
 
-The **Last Matching 15-Min Data Day** sensor shows how far the raw quarter-hour data
-has become trustworthy without correction. Its matching-day set is persisted and is
-rebuilt over the full history window when the import-state version changes.
+The **Last Matching 15-Min Data Day** sensor shows how far the quarter-hour data has
+become trustworthy without real-total correction. Exact duplicate API rows do not
+count twice; conflicting duplicates remain non-matching. Its matching-day set is
+persisted and is rebuilt over the full history window when the import-state version
+changes.

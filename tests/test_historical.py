@@ -152,7 +152,75 @@ def test_duplicate_quarter_hours_still_reconcile_to_real_daily_total() -> None:
 
     assert sum(reading.value_kwh for reading in readings) == 24.0
     assert sum(reading.value_kwh for reading in result.readings) == 12.0
-    assert result.pending_days == {date(2026, 8, 1)}
+    assert result.pending_days == set()
+    assert result.matching_days == {date(2026, 8, 1)}
+
+
+def test_identical_duplicate_quarter_hours_count_once_for_matching_day() -> None:
+    """Identical API duplicates do not make a physically matching raw day disagree."""
+    readings = []
+    for index in range(96):
+        timestamp = (
+            datetime(2026, 7, 31, 0, 15) + timedelta(minutes=15 * index)
+        ).replace(tzinfo=LISBON).astimezone(UTC)
+        readings.extend(
+            [
+                ConsumptionReading(timestamp=timestamp, value_wh=125.0),
+                ConsumptionReading(timestamp=timestamp, value_wh=125.0),
+            ]
+        )
+
+    indexes = [
+        MeterIndex(
+            timestamp=datetime(2026, 7, 31, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10597.0,
+            meter_serial="12345678",
+            register_count=3,
+        ),
+        MeterIndex(
+            timestamp=datetime(2026, 8, 1, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10609.0,
+            meter_serial="12345678",
+            register_count=3,
+        ),
+    ]
+
+    result = _reconcile_with_meter_indexes(readings, indexes)
+
+    assert result.matching_days == {date(2026, 7, 31)}
+    assert result.pending_days == set()
+
+
+def test_conflicting_duplicate_quarter_hours_do_not_count_as_matching() -> None:
+    """Different values for one timestamp are ambiguous and cannot prove a match."""
+    readings = []
+    for index in range(96):
+        timestamp = (
+            datetime(2026, 7, 31, 0, 15) + timedelta(minutes=15 * index)
+        ).replace(tzinfo=LISBON).astimezone(UTC)
+        readings.append(ConsumptionReading(timestamp=timestamp, value_wh=125.0))
+        if index == 10:
+            readings.append(ConsumptionReading(timestamp=timestamp, value_wh=250.0))
+
+    indexes = [
+        MeterIndex(
+            timestamp=datetime(2026, 7, 31, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10597.0,
+            meter_serial="12345678",
+            register_count=3,
+        ),
+        MeterIndex(
+            timestamp=datetime(2026, 8, 1, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10609.0,
+            meter_serial="12345678",
+            register_count=3,
+        ),
+    ]
+
+    result = _reconcile_with_meter_indexes(readings, indexes)
+
+    assert result.matching_days == set()
+    assert result.pending_days == {date(2026, 7, 31)}
 
 
 def test_real_meter_quantization_tolerance_accepts_three_register_deviation() -> None:
