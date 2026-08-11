@@ -8,7 +8,10 @@ from unittest.mock import MagicMock
 
 from homeassistant.components.sensor import SensorDeviceClass
 
-from custom_components.eredes.const import SENSOR_LAST_REAL_DATA_DAY
+from custom_components.eredes.const import (
+    SENSOR_LAST_MATCHING_15MIN_DATA_DAY,
+    SENSOR_LAST_REAL_DATA_DAY,
+)
 from custom_components.eredes.coordinator import ERedesCoordinatorData
 from custom_components.eredes.sensor import async_setup_entry
 
@@ -26,6 +29,7 @@ async def test_last_real_data_day_sensor_reports_latest_reliable_day() -> None:
         last_reading=None,
         last_update=datetime(2026, 8, 11, 9, 0, tzinfo=UTC),
         last_real_data_day=date(2026, 8, 7),
+        last_matching_15min_data_day=date(2026, 7, 31),
     )
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(coordinator=coordinator),
@@ -45,3 +49,12 @@ async def test_last_real_data_day_sensor_reports_latest_reliable_day() -> None:
     assert sensor.device_class == SensorDeviceClass.DATE
     assert sensor.native_value == date(2026, 8, 7)
     assert sensor.unique_id == f"{CPE}_{SENSOR_LAST_REAL_DATA_DAY}"
+
+    matching_sensor = next(
+        entity
+        for entity in entities
+        if entity.entity_description.key == SENSOR_LAST_MATCHING_15MIN_DATA_DAY
+    )
+    assert matching_sensor.device_class == SensorDeviceClass.DATE
+    assert matching_sensor.native_value == date(2026, 7, 31)
+    assert matching_sensor.unique_id == f"{CPE}_{SENSOR_LAST_MATCHING_15MIN_DATA_DAY}"

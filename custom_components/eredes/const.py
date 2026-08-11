@@ -35,3 +35,4 @@ REQUEST_TYPE_15MIN: Final = "3"  # 15-minute interval readings
 SENSOR_ENERGY: Final = "energy"
 SENSOR_POWER: Final = "power"
 SENSOR_LAST_REAL_DATA_DAY: Final = "last_real_data_day"
+SENSOR_LAST_MATCHING_15MIN_DATA_DAY: Final = "last_matching_15min_data_day"

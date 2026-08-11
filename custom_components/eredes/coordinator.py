@@ -39,6 +39,7 @@ class ERedesCoordinatorData:
     last_reading: ConsumptionReading | None
     last_update: datetime
     last_real_data_day: date | None
+    last_matching_15min_data_day: date | None
 
 
 class ERedesCoordinator(DataUpdateCoordinator[ERedesCoordinatorData]):
@@ -57,6 +58,7 @@ class ERedesCoordinator(DataUpdateCoordinator[ERedesCoordinatorData]):
         self.config_entry = entry
         self._cpe: str = entry.data[CONF_CPE]
         self._last_real_data_day: date | None = None
+        self._last_matching_15min_data_day: date | None = None
 
         session = async_get_clientsession(hass)
         self._client = ERedesClient(session, str(entry.data[CONF_ACCESS_TOKEN]))
@@ -80,6 +82,14 @@ class ERedesCoordinator(DataUpdateCoordinator[ERedesCoordinatorData]):
         self._last_real_data_day = day
         if self.data is not None:
             self.async_set_updated_data(replace(self.data, last_real_data_day=day))
+
+    def set_last_matching_15min_data_day(self, day: date | None) -> None:
+        """Update the latest day whose raw 15-minute curve matches real data."""
+        self._last_matching_15min_data_day = day
+        if self.data is not None:
+            self.async_set_updated_data(
+                replace(self.data, last_matching_15min_data_day=day)
+            )
 
     async def _async_update_data(self) -> ERedesCoordinatorData:
         """Fetch data from E-REDES."""
@@ -120,6 +130,7 @@ class ERedesCoordinator(DataUpdateCoordinator[ERedesCoordinatorData]):
                 last_reading=last_reading,
                 last_update=now,
                 last_real_data_day=self._last_real_data_day,
+                last_matching_15min_data_day=self._last_matching_15min_data_day,
             )
 
         except ERedesAuthenticationError as err:

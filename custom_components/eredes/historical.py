@@ -44,10 +44,11 @@ TOTAL_HISTORY_DAYS = 365  # 1 year
 # version bump forces one successful full-window rebuild before append/resume
 # mode is allowed again. This repairs older partial imports without repeatedly
 # downloading a year of data on every Home Assistant restart.
-HISTORY_IMPORT_VERSION = 7
+HISTORY_IMPORT_VERSION = 8
 HISTORY_STORAGE_VERSION = 1
 HISTORY_STORAGE_KEY_PREFIX = f"{DOMAIN}.historical_import"
 HISTORY_PENDING_DAYS_KEY = "pending_reconciliation_days"
+HISTORY_MATCHING_15MIN_DAYS_KEY = "matching_15min_data_days"
 HISTORY_LAST_REAL_DATA_DAY_KEY = "last_real_data_day"
 
 # E-REDES request boundaries are Lisbon wall-clock values.
@@ -71,6 +72,7 @@ class _HistoryImportPlan:
     after: datetime | None
     needs_full_import: bool
     pending_days: set[date]
+    matching_days: set[date]
     last_real_data_day: date | None
 
 
@@ -84,10 +86,11 @@ class _DailyRealTotal:
 
 @dataclass(slots=True)
 class _ReconciliationResult:
-    """Reconciled readings and days that still require a later raw refetch."""
+    """Reconciled readings plus persistent reconciliation/validation state."""
 
     readings: list[ConsumptionReading]
     pending_days: set[date]
+    matching_days: set[date]
 
 
 def _pending_days_from_state(state: Any) -> set[date]:
@@ -109,6 +112,25 @@ def _pending_days_from_state(state: Any) -> set[date]:
     return pending_days
 
 
+def _matching_days_from_state(state: Any) -> set[date]:
+    """Parse persisted days whose raw 15-minute curve matched real data."""
+    if not isinstance(state, dict):
+        return set()
+    raw_days = state.get(HISTORY_MATCHING_15MIN_DAYS_KEY, [])
+    if not isinstance(raw_days, list):
+        return set()
+
+    matching_days: set[date] = set()
+    for raw_day in raw_days:
+        if not isinstance(raw_day, str):
+            continue
+        try:
+            matching_days.add(date.fromisoformat(raw_day))
+        except ValueError:
+            _LOGGER.warning("Ignoring invalid matching 15-minute date %r", raw_day)
+    return matching_days
+
+
 def _last_real_data_day_from_state(state: Any) -> date | None:
     """Parse the persisted latest reliable calendar day."""
     if not isinstance(state, dict):
@@ -125,12 +147,16 @@ def _last_real_data_day_from_state(state: Any) -> date | None:
 
 def _history_state(
     pending_days: set[date],
+    matching_days: set[date],
     last_real_data_day: date | None,
 ) -> dict[str, Any]:
     """Return persisted state for a successful historical synchronization."""
     return {
         "version": HISTORY_IMPORT_VERSION,
         HISTORY_PENDING_DAYS_KEY: sorted(day.isoformat() for day in pending_days),
+        HISTORY_MATCHING_15MIN_DAYS_KEY: sorted(
+            day.isoformat() for day in matching_days
+        ),
         HISTORY_LAST_REAL_DATA_DAY_KEY: (
             last_real_data_day.isoformat() if last_real_data_day else None
         ),
@@ -169,9 +195,12 @@ async def _async_build_import_plan(
     )
     import_state = await store.async_load()
     pending_days = _pending_days_from_state(import_state)
+    matching_days = _matching_days_from_state(import_state)
     last_real_data_day = _last_real_data_day_from_state(import_state)
     if last_real_data_day is not None:
         coordinator.set_last_real_data_day(last_real_data_day)
+    if matching_days:
+        coordinator.set_last_matching_15min_data_day(max(matching_days))
     full_import_current = (
         isinstance(import_state, dict)
         and import_state.get("version") == HISTORY_IMPORT_VERSION
@@ -203,6 +232,7 @@ async def _async_build_import_plan(
                 after=None,
                 needs_full_import=True,
                 pending_days=pending_days,
+                matching_days=matching_days,
                 last_real_data_day=last_real_data_day,
             ),
             store,
@@ -252,6 +282,7 @@ async def _async_build_import_plan(
             after=None,
             needs_full_import=False,
             pending_days=pending_days,
+            matching_days=matching_days,
             last_real_data_day=last_real_data_day,
         ),
         store,
@@ -511,6 +542,7 @@ def _reconcile_with_meter_indexes(
     indexes: list[MeterIndex],
     *,
     pending_days: set[date] | None = None,
+    matching_days: set[date] | None = None,
 ) -> _ReconciliationResult:
     """Reconcile implausible complete days and track them until raw data recovers.
 
@@ -521,9 +553,10 @@ def _reconcile_with_meter_indexes(
     a later complete refetch falls back inside the envelope.
     """
     remaining_pending = set(pending_days or ())
+    remaining_matching = set(matching_days or ())
     daily_totals = _daily_real_totals(indexes)
     if not daily_totals or not readings:
-        return _ReconciliationResult(readings, remaining_pending)
+        return _ReconciliationResult(readings, remaining_pending, remaining_matching)
 
     groups: dict[date, list[int]] = {}
     for position, reading in enumerate(readings):
@@ -537,11 +570,13 @@ def _reconcile_with_meter_indexes(
         positions = groups.get(day)
         if not positions or not _is_complete_load_curve_day(readings, positions, day):
             remaining_pending.add(day)
+            remaining_matching.discard(day)
             continue
 
         curve_kwh = sum(readings[position].value_kwh for position in positions)
         deviation_kwh = abs(curve_kwh - real_total.value_kwh)
         if deviation_kwh <= real_total.tolerance_kwh:
+            remaining_matching.add(day)
             if day in remaining_pending:
                 remaining_pending.remove(day)
                 resolved_days += 1
@@ -554,6 +589,7 @@ def _reconcile_with_meter_indexes(
             continue
 
         remaining_pending.add(day)
+        remaining_matching.discard(day)
         if curve_kwh == 0:
             _LOGGER.warning(
                 "Cannot distribute %.3f kWh real total for %s because its "
@@ -586,7 +622,7 @@ def _reconcile_with_meter_indexes(
         )
     if resolved_days:
         _LOGGER.info("Resolved %d pending reconciliation day(s)", resolved_days)
-    return _ReconciliationResult(reconciled, remaining_pending)
+    return _ReconciliationResult(reconciled, remaining_pending, remaining_matching)
 
 
 async def _async_verify_statistics_import(
@@ -734,8 +770,13 @@ async def async_import_historical_data(
         all_readings,
         meter_indexes,
         pending_days=plan.pending_days,
+        matching_days=plan.matching_days,
     )
     all_readings = reconciliation.readings
+    last_matching_15min_data_day = (
+        max(reconciliation.matching_days) if reconciliation.matching_days else None
+    )
+    coordinator.set_last_matching_15min_data_day(last_matching_15min_data_day)
 
     # On a full rebuild `plan.after` is None and all rows in the year are
     # regenerated. Persistence replaces the old external statistic entirely so
@@ -771,7 +812,11 @@ async def async_import_historical_data(
         return False
 
     await store.async_save(
-        _history_state(reconciliation.pending_days, last_real_data_day)
+        _history_state(
+            reconciliation.pending_days,
+            reconciliation.matching_days,
+            last_real_data_day,
+        )
     )
     if plan.needs_full_import:
         _LOGGER.debug(

@@ -103,12 +103,17 @@ def test_real_meter_indexes_override_disagreeing_daily_load_curve() -> None:
         ),
     ]
 
-    result = _reconcile_with_meter_indexes(readings, indexes)
+    result = _reconcile_with_meter_indexes(
+        readings,
+        indexes,
+        matching_days={date(2026, 8, 1)},
+    )
 
     assert sum(reading.value_kwh for reading in readings) == 24.0
     assert sum(reading.value_kwh for reading in result.readings) == 12.0
     assert all(reading.value_wh == 125.0 for reading in result.readings)
     assert result.pending_days == {date(2026, 8, 1)}
+    assert result.matching_days == set()
 
 
 def test_duplicate_quarter_hours_still_reconcile_to_real_daily_total() -> None:
@@ -189,6 +194,7 @@ def test_real_meter_quantization_tolerance_accepts_three_register_deviation() ->
     # data is now credible and the pending repair is cleared.
     assert sum(reading.value_kwh for reading in result.readings) == pytest.approx(14.4)
     assert result.pending_days == set()
+    assert result.matching_days == {date(2026, 8, 1)}
 
 
 def test_pending_reconciliation_survives_incomplete_refetch() -> None:
@@ -264,7 +270,7 @@ def test_real_daily_total_does_not_cross_meter_replacement() -> None:
 
 @pytest.mark.asyncio
 async def test_history_sync_publishes_latest_real_consumption_day() -> None:
-    """A real midnight endpoint publishes the preceding reliable calendar day."""
+    """A matching raw curve publishes both real-data validation dates."""
     plan = SimpleNamespace(
         start_date=datetime(2026, 8, 7),
         end_date=datetime(2026, 8, 8),
@@ -272,6 +278,7 @@ async def test_history_sync_publishes_latest_real_consumption_day() -> None:
         after=None,
         needs_full_import=False,
         pending_days=set(),
+        matching_days=set(),
         last_real_data_day=None,
     )
     store = MagicMock()
@@ -280,6 +287,7 @@ async def test_history_sync_publishes_latest_real_consumption_day() -> None:
         cpe=CPE,
         client=MagicMock(),
         set_last_real_data_day=MagicMock(),
+        set_last_matching_15min_data_day=MagicMock(),
     )
     indexes = [
         MeterIndex(
@@ -295,10 +303,17 @@ async def test_history_sync_publishes_latest_real_consumption_day() -> None:
             register_count=3,
         ),
     ]
-    reading = ConsumptionReading(
-        timestamp=datetime(2026, 8, 7, 0, 15, tzinfo=LISBON).astimezone(UTC),
-        value_wh=1000.0,
-    )
+    readings = [
+        ConsumptionReading(
+            timestamp=(
+                datetime(2026, 8, 7, 0, 15) + timedelta(minutes=15 * index)
+            )
+            .replace(tzinfo=LISBON)
+            .astimezone(UTC),
+            value_wh=62.5,
+        )
+        for index in range(96)
+    ]
 
     with (
         patch(
@@ -307,7 +322,7 @@ async def test_history_sync_publishes_latest_real_consumption_day() -> None:
         ),
         patch(
             "custom_components.eredes.historical._async_fetch_history",
-            AsyncMock(return_value=[reading]),
+            AsyncMock(return_value=readings),
         ),
         patch(
             "custom_components.eredes.historical._async_fetch_meter_indexes",
@@ -322,6 +337,9 @@ async def test_history_sync_publishes_latest_real_consumption_day() -> None:
 
     assert completed is True
     coordinator.set_last_real_data_day.assert_called_once_with(date(2026, 8, 7))
+    coordinator.set_last_matching_15min_data_day.assert_called_once_with(
+        date(2026, 8, 7)
+    )
 
 
 @pytest.mark.asyncio
@@ -457,7 +475,11 @@ async def test_partial_recent_history_triggers_full_year_repair() -> None:
     client = MagicMock()
     client.get_consumption = AsyncMock(side_effect=fetch_consumption)
     client.get_meter_indexes = AsyncMock(return_value=[])
-    coordinator = SimpleNamespace(cpe=CPE, client=client)
+    coordinator = SimpleNamespace(
+        cpe=CPE,
+        client=client,
+        set_last_matching_15min_data_day=MagicMock(),
+    )
 
     with (
         patch(
@@ -479,6 +501,7 @@ async def test_partial_recent_history_triggers_full_year_repair() -> None:
         {
             "version": HISTORY_IMPORT_VERSION,
             "pending_reconciliation_days": [],
+            "matching_15min_data_days": [],
             "last_real_data_day": None,
         }
     )
@@ -544,6 +567,7 @@ async def test_reconciled_day_is_persisted_as_pending() -> None:
         cpe=CPE,
         client=MagicMock(),
         set_last_real_data_day=MagicMock(),
+        set_last_matching_15min_data_day=MagicMock(),
     )
     readings = [
         ConsumptionReading(
@@ -596,6 +620,7 @@ async def test_reconciled_day_is_persisted_as_pending() -> None:
         {
             "version": HISTORY_IMPORT_VERSION,
             "pending_reconciliation_days": ["2026-08-01"],
+            "matching_15min_data_days": [],
             "last_real_data_day": "2026-08-01",
         }
     )
@@ -623,9 +648,11 @@ async def test_current_history_version_resumes_from_latest_statistic() -> None:
     )
     store = MagicMock()
     restored_real_day = (now - timedelta(days=4)).date()
+    restored_matching_day = (now - timedelta(days=10)).date()
     store.async_load = AsyncMock(
         return_value={
             "version": HISTORY_IMPORT_VERSION,
+            "matching_15min_data_days": [restored_matching_day.isoformat()],
             "last_real_data_day": restored_real_day.isoformat(),
         }
     )
@@ -636,6 +663,7 @@ async def test_current_history_version_resumes_from_latest_statistic() -> None:
         cpe=CPE,
         client=client,
         set_last_real_data_day=MagicMock(),
+        set_last_matching_15min_data_day=MagicMock(),
     )
 
     with (
@@ -652,6 +680,9 @@ async def test_current_history_version_resumes_from_latest_statistic() -> None:
     assert first_start >= now - timedelta(days=8)
     assert first_start <= now - timedelta(days=6)
     coordinator.set_last_real_data_day.assert_called_once_with(restored_real_day)
+    coordinator.set_last_matching_15min_data_day.assert_called_once_with(
+        restored_matching_day
+    )
     store.async_save.assert_not_awaited()
 
 
@@ -697,7 +728,11 @@ async def test_full_repair_removes_stale_shifted_tail_row() -> None:
         return_value={"version": HISTORY_IMPORT_VERSION - 1}
     )
     store.async_save = AsyncMock()
-    coordinator = SimpleNamespace(cpe=CPE, client=MagicMock())
+    coordinator = SimpleNamespace(
+        cpe=CPE,
+        client=MagicMock(),
+        set_last_matching_15min_data_day=MagicMock(),
+    )
     coordinator.client.get_meter_indexes = AsyncMock(return_value=[])
     corrected_reading = ConsumptionReading(
         timestamp=corrected_start + timedelta(minutes=15),

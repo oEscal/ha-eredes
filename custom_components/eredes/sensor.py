@@ -16,7 +16,13 @@ from homeassistant.const import UnitOfEnergy, UnitOfPower
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, SENSOR_ENERGY, SENSOR_LAST_REAL_DATA_DAY, SENSOR_POWER
+from .const import (
+    DOMAIN,
+    SENSOR_ENERGY,
+    SENSOR_LAST_MATCHING_15MIN_DATA_DAY,
+    SENSOR_LAST_REAL_DATA_DAY,
+    SENSOR_POWER,
+)
 from .coordinator import ERedesCoordinator, ERedesCoordinatorData
 
 if TYPE_CHECKING:
@@ -62,6 +68,13 @@ SENSOR_DESCRIPTIONS: tuple[ERedesSensorEntityDescription, ...] = (
         name="Last Real Data Day",
         device_class=SensorDeviceClass.DATE,
         value_fn=lambda data: data.last_real_data_day,
+    ),
+    ERedesSensorEntityDescription(
+        key=SENSOR_LAST_MATCHING_15MIN_DATA_DAY,
+        translation_key="last_matching_15min_data_day",
+        name="Last Matching 15-Min Data Day",
+        device_class=SensorDeviceClass.DATE,
+        value_fn=lambda data: data.last_matching_15min_data_day,
     ),
 )
 

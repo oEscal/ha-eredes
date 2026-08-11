@@ -76,6 +76,9 @@
       },
       "last_real_data_day": {
         "name": "Último dia com dados reais"
+      },
+      "last_matching_15min_data_day": {
+        "name": "Último dia com dados de 15 min coincidentes"
       }
     }
   }
