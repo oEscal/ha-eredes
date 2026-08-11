@@ -111,6 +111,45 @@ def test_real_meter_indexes_override_disagreeing_daily_load_curve() -> None:
     assert result.pending_days == {date(2026, 8, 1)}
 
 
+def test_duplicate_quarter_hours_still_reconcile_to_real_daily_total() -> None:
+    """Duplicate load-curve rows must not bypass a known real daily total."""
+    # Model a duplicated August 1 curve: each physical 15-minute interval is
+    # returned twice at 125 Wh, so the raw imported day totals 24 kWh instead of
+    # the 12 kWh implied by the real cumulative meter indexes.
+    readings = []
+    for index in range(96):
+        timestamp = (
+            datetime(2026, 8, 1, 0, 15) + timedelta(minutes=15 * index)
+        ).replace(tzinfo=LISBON).astimezone(UTC)
+        readings.extend(
+            [
+                ConsumptionReading(timestamp=timestamp, value_wh=125.0),
+                ConsumptionReading(timestamp=timestamp, value_wh=125.0),
+            ]
+        )
+
+    indexes = [
+        MeterIndex(
+            timestamp=datetime(2026, 8, 1, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10609.0,
+            meter_serial="12345678",
+            register_count=3,
+        ),
+        MeterIndex(
+            timestamp=datetime(2026, 8, 2, tzinfo=LISBON).astimezone(UTC),
+            value_kwh=10621.0,
+            meter_serial="12345678",
+            register_count=3,
+        ),
+    ]
+
+    result = _reconcile_with_meter_indexes(readings, indexes)
+
+    assert sum(reading.value_kwh for reading in readings) == 24.0
+    assert sum(reading.value_kwh for reading in result.readings) == 12.0
+    assert result.pending_days == {date(2026, 8, 1)}
+
+
 def test_real_meter_quantization_tolerance_accepts_three_register_deviation() -> None:
     """A tri-hourly real index allows up to 3 kWh of endpoint quantization error."""
     readings = [

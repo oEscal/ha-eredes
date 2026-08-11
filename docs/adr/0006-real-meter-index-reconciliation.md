@@ -51,8 +51,9 @@ that day's real endpoint becomes available.
    falls inside the applicable quantization envelope. The newly credible raw curve is
    then used without scaling.
 8. A day with a real cumulative delta but an incomplete/discontinuous 15-minute curve
-   is also marked pending; it is never considered repaired merely because its first and
-   last timestamps exist.
+   is also marked pending. Completeness is based on coverage of every expected local
+   15-minute timestamp, not the raw row count: duplicate rows for an already-covered
+   quarter-hour do not make an otherwise complete day unreconcilable.
 9. When no real daily pair exists yet, retain the 15-minute load curve unchanged and do
    not invent a daily total.
 10. Rebuild a seven-day rolling statistics tail on normal synchronizations. If a

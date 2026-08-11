@@ -44,7 +44,7 @@ TOTAL_HISTORY_DAYS = 365  # 1 year
 # version bump forces one successful full-window rebuild before append/resume
 # mode is allowed again. This repairs older partial imports without repeatedly
 # downloading a year of data on every Home Assistant restart.
-HISTORY_IMPORT_VERSION = 6
+HISTORY_IMPORT_VERSION = 7
 HISTORY_STORAGE_VERSION = 1
 HISTORY_STORAGE_KEY_PREFIX = f"{DOMAIN}.historical_import"
 HISTORY_PENDING_DAYS_KEY = "pending_reconciliation_days"
@@ -481,25 +481,29 @@ def _is_complete_load_curve_day(
     expected_count = int(
         (expected_end_utc - expected_start.astimezone(UTC)) / READING_INTERVAL
     )
-    if len(positions) != expected_count:
+    expected_timestamps = {
+        expected_first_end_utc + READING_INTERVAL * index
+        for index in range(expected_count)
+    }
+    actual_timestamps = {readings[position].timestamp for position in positions}
+
+    # E-REDES can return duplicate rows for the same quarter-hour. Completeness
+    # depends on timestamp coverage, not the raw number of rows: duplicates are
+    # harmless when a real daily total is available because reconciliation scales
+    # the whole curve back to that authoritative total.
+    missing_timestamps = expected_timestamps - actual_timestamps
+    unexpected_timestamps = actual_timestamps - expected_timestamps
+    if missing_timestamps or unexpected_timestamps:
         _LOGGER.debug(
-            "Not reconciling incomplete load-curve day %s: got %d of %d intervals",
+            "Not reconciling incomplete/discontinuous load-curve day %s: "
+            "%d missing and %d unexpected interval timestamps",
             day.isoformat(),
-            len(positions),
-            expected_count,
+            len(missing_timestamps),
+            len(unexpected_timestamps),
         )
         return False
 
-    actual_timestamps = [readings[position].timestamp for position in positions]
-    for index, timestamp in enumerate(actual_timestamps):
-        if timestamp != expected_first_end_utc + READING_INTERVAL * index:
-            _LOGGER.debug(
-                "Not reconciling discontinuous load-curve day %s at %s",
-                day.isoformat(),
-                timestamp.isoformat(),
-            )
-            return False
-    return actual_timestamps[-1] == expected_end_utc
+    return True
 
 
 def _reconcile_with_meter_indexes(
