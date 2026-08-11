@@ -80,6 +80,22 @@ set, so the sensor can move backward. For example, a latest real meter index at
 2026-08-08 00:00 makes 2026-08-07 the latest reliable consumption day. See
 `docs/adr/0006`.
 
+**Provisional current-day energy**:
+A temporary estimate written to the same `eredes:energy_<cpe suffix>` external
+statistic while E-REDES has no load curve for the current Europe/Lisbon calendar day.
+It is derived from Home Assistant Energy Dashboard `device_consumption` statistics,
+summing only top-level entries (those without `included_in_stat`) and excluding the
+E-REDES statistic itself. Recorder finalized hourly `change` values are combined for
+past hours, while 5-minute short-term `change` values keep the open current hour fresh;
+the cumulative sum is seeded from the last E-REDES statistic before local midnight.
+The estimate refreshes every 15 minutes using local Home Assistant data only. It is a
+lower bound, because untracked loads are absent; solar/battery installations can also
+make household device load differ from grid import. Completed-day provisional rows
+are replaced by the normal E-REDES history/reconciliation path once E-REDES data is
+fetched. Provisional data never affects **Last Real Data Day** or **Last Matching
+15-Min Data Day**. See `docs/adr/0007`.
+_Avoid_: "real-time E-REDES data", "real grid consumption".
+
 ## Authentication
 
 **Access token (`aat`)**:

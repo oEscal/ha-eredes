@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -64,6 +65,10 @@ async def test_setup_runs_history_in_background_and_schedules_daily_5am(
             "custom_components.eredes.async_track_time_change",
             create=True,
         ) as track_time_change,
+        patch(
+            "custom_components.eredes.async_track_time_interval",
+            create=True,
+        ) as track_time_interval,
     ):
         assert await async_setup_entry(hass, entry) is True
 
@@ -73,6 +78,8 @@ async def test_setup_runs_history_in_background_and_schedules_daily_5am(
             == "eredes_historical_import"
         )
         track_time_change.assert_called_once()
+        track_time_interval.assert_called_once()
+        assert track_time_interval.call_args.args[2] == timedelta(minutes=15)
         assert track_time_change.call_args.kwargs == {
             "hour": 5,
             "minute": 0,
@@ -127,6 +134,7 @@ async def test_setup_uses_hourly_history_frequency(
             side_effect=create_background_task,
         ) as create_background_task_mock,
         patch("custom_components.eredes.async_track_time_change") as track_time_change,
+        patch("custom_components.eredes.async_track_time_interval"),
     ):
         assert await async_setup_entry(hass, entry) is True
 
@@ -177,6 +185,7 @@ async def test_setup_uses_configured_history_schedule_and_frequency(
             side_effect=create_background_task,
         ) as create_background_task_mock,
         patch("custom_components.eredes.async_track_time_change") as track_time_change,
+        patch("custom_components.eredes.async_track_time_interval"),
     ):
         assert await async_setup_entry(hass, entry) is True
 

@@ -86,6 +86,17 @@ remains current without requiring a restart or reload. The default is **every da
 05:00 in Home Assistant's local time**. The integration's **Configure** options allow
 an hourly schedule or an every-N-days schedule. For hourly synchronization, the
 configured minute is used each hour (for example, `05:30` means `:30` every hour).
+
+Because E-REDES does not publish the current local day's load curve, the integration
+also refreshes a **provisional current-day estimate every 15 minutes** from the
+individual electrical-device consumption statistics already configured in Home
+Assistant's Energy Dashboard. Only top-level devices are summed; a device marked as
+included in another statistic is excluded to avoid double counting. This estimate is
+written to the same `eredes:energy_…` statistic and is replaced automatically by the
+normal E-REDES history/reconciliation path once that completed day's E-REDES data
+arrives. It is a lower-bound estimate: untracked loads are absent, and with solar or
+batteries the sum of device loads is not necessarily equal to physical grid import.
+
 Add that statistic to your Energy Dashboard:
 
 1. Go to **Settings** > **Dashboards** > **Energy**
@@ -102,7 +113,7 @@ Add that statistic to your Energy Dashboard:
 |------------|-------------|
 | Manual token | Due to CAPTCHA, tokens must be obtained manually from browser |
 | Token expiry | Token expires and requires periodic manual refresh |
-| Data delay | E-REDES publishes consumption with roughly a 24h delay, so sensors reflect the previous day rather than real-time |
+| Data delay | E-REDES publishes consumption with roughly a 24h delay. The Energy Dashboard can use configured individual-device statistics as a provisional current-day estimate until E-REDES data arrives. |
 | Resolution | Data is provided in 15-minute intervals only |
 | Real-time | For real-time monitoring, use a dedicated energy monitor (e.g., Shelly) |
 

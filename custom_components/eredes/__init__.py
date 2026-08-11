@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import time
+from datetime import time, timedelta
 from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import callback
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import (
+    async_track_time_change,
+    async_track_time_interval,
+)
 
 from .const import (
     CONF_ACCESS_TOKEN,
@@ -26,7 +30,6 @@ from .const import (
 from .coordinator import ERedesCoordinator
 
 if TYPE_CHECKING:
-    import asyncio
     from datetime import datetime
 
     from homeassistant.core import HomeAssistant
@@ -44,7 +47,9 @@ class ERedesData:
 
     coordinator: ERedesCoordinator
     client: ERedesClient
+    statistics_import_lock: asyncio.Lock
     historical_import_task: asyncio.Task[None] | None = None
+    provisional_import_task: asyncio.Task[None] | None = None
     history_sync_days_elapsed: int = 0
 
 
@@ -63,6 +68,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ERedesConfigEntry) -> bo
     entry.runtime_data = ERedesData(
         coordinator=coordinator,
         client=coordinator.client,
+        statistics_import_lock=asyncio.Lock(),
     )
 
     # Set up platforms
@@ -92,6 +98,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ERedesConfigEntry) -> bo
             second=sync_time.second,
         )
     entry.async_on_unload(remove_history_schedule)
+    remove_provisional_schedule = async_track_time_interval(
+        hass,
+        lambda now: _handle_provisional_sync(hass, entry, now),
+        timedelta(minutes=15),
+        name="E-REDES provisional current-day energy",
+    )
+    entry.async_on_unload(remove_provisional_schedule)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     return True
@@ -144,6 +157,34 @@ def _start_historical_import(
 
 
 @callback
+def _start_provisional_import(
+    hass: HomeAssistant,
+    entry: ERedesConfigEntry,
+) -> None:
+    """Start a provisional current-day import unless one is already running."""
+    existing_task = entry.runtime_data.provisional_import_task
+    if existing_task is not None and not existing_task.done():
+        _LOGGER.debug("Provisional energy import already running; skipping duplicate")
+        return
+
+    entry.runtime_data.provisional_import_task = entry.async_create_background_task(
+        hass,
+        _async_import_provisional_data(hass, entry, entry.runtime_data.coordinator),
+        name="eredes_provisional_current_day_import",
+    )
+
+
+@callback
+def _handle_provisional_sync(
+    hass: HomeAssistant,
+    entry: ERedesConfigEntry,
+    _now: datetime,
+) -> None:
+    """Refresh today's provisional Energy Dashboard-derived consumption."""
+    _start_provisional_import(hass, entry)
+
+
+@callback
 def _handle_hourly_history_sync(
     hass: HomeAssistant,
     entry: ERedesConfigEntry,
@@ -183,6 +224,21 @@ def _handle_daily_history_sync(
     _start_historical_import(hass, entry)
 
 
+async def _async_import_provisional_data(
+    hass: HomeAssistant,
+    entry: ERedesConfigEntry,
+    coordinator: ERedesCoordinator,
+) -> None:
+    """Import provisional current-day device consumption in the background."""
+    from .historical import async_import_provisional_current_day  # noqa: PLC0415
+
+    try:
+        async with entry.runtime_data.statistics_import_lock:
+            await async_import_provisional_current_day(hass, coordinator)
+    except Exception:
+        _LOGGER.exception("Failed to import provisional current-day energy")
+
+
 async def _async_import_historical_data(
     hass: HomeAssistant,
     _entry: ERedesConfigEntry,
@@ -193,17 +249,24 @@ async def _async_import_historical_data(
 
     _LOGGER.debug("Starting historical data import for CPE %s", coordinator.cpe[-8:])
     try:
-        completed = await async_import_historical_data(hass, coordinator)
-        if completed:
-            _entry.runtime_data.history_sync_days_elapsed = 0
-            _LOGGER.debug("Historical data import completed")
-        else:
-            _LOGGER.warning(
-                "Historical data import incomplete; it will be retried at the next "
-                "daily synchronization or integration setup"
-            )
+        async with _entry.runtime_data.statistics_import_lock:
+            completed = await async_import_historical_data(hass, coordinator)
+            if completed:
+                _entry.runtime_data.history_sync_days_elapsed = 0
+                _LOGGER.debug("Historical data import completed")
+            else:
+                _LOGGER.warning(
+                    "Historical data import incomplete; it will be retried at the next "
+                    "daily synchronization or integration setup"
+                )
     except Exception:
         _LOGGER.exception("Failed to import historical data")
+
+    # Historical E-REDES rows are authoritative. Refresh the current-day
+    # provisional tail only after that write finishes so it cannot race the
+    # history replacement/reconciliation path. If Home Assistant cancels this
+    # task during unload, CancelledError propagates and this code is not reached.
+    _start_provisional_import(hass, _entry)
 
 
 async def _async_options_updated(

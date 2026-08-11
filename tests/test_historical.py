@@ -20,6 +20,7 @@ from custom_components.eredes.historical import (
     _daily_real_totals,
     _reconcile_with_meter_indexes,
     async_import_historical_data,
+    async_import_provisional_current_day,
     statistic_id,
 )
 
@@ -36,6 +37,94 @@ def _reading(hour: int, minute: int, value_wh: float) -> ConsumptionReading:
         timestamp=datetime(2026, 1, 1, hour, minute, tzinfo=UTC),
         value_wh=value_wh,
     )
+
+
+@pytest.mark.asyncio
+async def test_current_day_fallback_uses_top_level_energy_dashboard_devices() -> None:
+    """Current-day fallback sums only top-level device consumption statistics."""
+    stat_id = statistic_id(CPE)
+    now_utc = datetime.now(tz=UTC)
+    today_start = now_utc.astimezone(LISBON).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(UTC)
+    hour_0 = today_start
+    hour_1 = today_start + timedelta(hours=1)
+    current_hour = now_utc.replace(minute=0, second=0, microsecond=0)
+
+    manager = SimpleNamespace(
+        data={
+            "energy_sources": [],
+            "device_consumption": [
+                {"stat_consumption": "sensor.kitchen_energy"},
+                {
+                    "stat_consumption": "sensor.kettle_energy",
+                    "included_in_stat": "sensor.kitchen_energy",
+                },
+                {"stat_consumption": "sensor.office_energy"},
+                {"stat_consumption": stat_id},
+            ],
+        }
+    )
+    recorder = SimpleNamespace(async_add_executor_job=AsyncMock())
+
+    def statistics_result(_func, *_args):
+        statistic_ids = _args[3]
+        period = _args[4]
+        if statistic_ids == {stat_id}:
+            return {
+                stat_id: [
+                    {"start": today_start - timedelta(hours=1), "sum": 100.0}
+                ]
+            }
+        assert statistic_ids == {"sensor.kitchen_energy", "sensor.office_energy"}
+        if period == "5minute":
+            return {
+                "sensor.kitchen_energy": [
+                    {"start": current_hour.timestamp(), "change": 0.1}
+                ],
+                "sensor.office_energy": [
+                    {"start": current_hour.timestamp(), "change": 0.05}
+                ],
+            }
+        assert period == "hour"
+        return {
+            "sensor.kitchen_energy": [
+                {"start": hour_0.timestamp(), "change": 1.2},
+                {"start": hour_1.timestamp(), "change": 0.3},
+            ],
+            "sensor.office_energy": [
+                {"start": hour_0.timestamp(), "change": 0.5},
+                {"start": hour_1.timestamp(), "change": 0.2},
+            ],
+        }
+
+    recorder.async_add_executor_job.side_effect = statistics_result
+    coordinator = SimpleNamespace(cpe=CPE)
+
+    with (
+        patch(
+            "custom_components.eredes.historical.async_get_manager",
+            AsyncMock(return_value=manager),
+        ),
+        patch(
+            "custom_components.eredes.historical.get_instance", return_value=recorder
+        ),
+        patch(
+            "custom_components.eredes.historical._async_persist_statistics",
+            AsyncMock(return_value=True),
+        ) as persist_statistics,
+    ):
+        written = await async_import_provisional_current_day(
+            MagicMock(), coordinator
+        )
+
+    assert written is True
+    statistics = persist_statistics.await_args.args[3]
+    assert [(row["start"], row["state"], row["sum"]) for row in statistics] == [
+        (hour_0, pytest.approx(1.7), pytest.approx(101.7)),
+        (hour_1, pytest.approx(0.5), pytest.approx(102.2)),
+        (current_hour, pytest.approx(0.15), pytest.approx(102.35)),
+    ]
 
 
 def test_statistic_id_is_valid_external_id() -> None:
