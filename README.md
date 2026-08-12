@@ -95,7 +95,9 @@ Energy Dashboard. The refresh interval is configurable under **Configure** in mi
 device marked as included in another statistic is excluded to avoid double counting.
 This local refresh is independent of E-REDES authentication and connectivity: an
 expired token or portal outage leaves the E-REDES entities unavailable and may start
-reauthentication, but does not stop the current-day Energy Dashboard estimate. The
+reauthentication, but does not stop the current-day Energy Dashboard estimate. Initial
+remote and provisional refreshes run as lifecycle-managed background work, so neither
+E-REDES nor Recorder can block config-entry setup during Home Assistant startup. The
 estimate is written to the same `eredes:energy_…` statistic and is replaced
 automatically by the normal E-REDES history/reconciliation path once that completed
 day's E-REDES data arrives. It is a lower-bound estimate: untracked loads are absent,

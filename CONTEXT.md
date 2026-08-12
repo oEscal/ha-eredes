@@ -94,11 +94,13 @@ provisional rows are written instead of starting a new zero-based series. Record
 imports are verified by polling the persisted boundary rows because an asynchronous
 import can already be dequeued while its database transaction is still in flight. The
 estimate refreshes using local Home Assistant data only, independently of E-REDES
-authentication or connectivity. Setup uses a non-fatal remote coordinator refresh so
-an expired token can start reauthentication without unloading the integration or
-removing the local provisional scheduler. The refresh interval is configurable from
-1 to 1440 minutes and defaults to 15 minutes; one local refresh also runs immediately
-at integration setup. It is a lower bound because untracked loads are absent;
+authentication or connectivity. Config-entry setup performs no remote or statistics
+I/O: the initial E-REDES refresh and initial local provisional refresh are managed
+background jobs, so neither portal availability nor Recorder readiness can block Home
+Assistant startup. Authentication failure can still start reauthentication without
+unloading the integration or removing the local provisional scheduler. The refresh
+interval is configurable from 1 to 1440 minutes and defaults to 15 minutes. It is a
+lower bound because untracked loads are absent;
 solar/battery installations can also make household device load differ from grid
 import. Completed-day provisional rows
 are replaced by the normal E-REDES history/reconciliation path once E-REDES data is

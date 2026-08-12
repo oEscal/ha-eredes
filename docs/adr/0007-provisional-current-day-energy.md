@@ -43,20 +43,21 @@ Home Assistant's Energy preferences expose individual electrical consumers under
    same E-REDES external statistic, allowing later runs to update those hour starts.
 6. Refresh the provisional current day using only local Home Assistant data. The
    interval is user-configurable from 1 to 1440 minutes and defaults to 15 minutes.
-   Run one provisional refresh immediately during config-entry setup as well. This
-   refresh does not make additional E-REDES API requests. The interval callback is
-   itself asynchronous and is owned by Home Assistant's event scheduler; it does not
-   spawn a second detached integration background task. If a statistics import is
-   already running, skip that interval tick instead of queueing another waiter.
+   Queue one initial provisional refresh as ConfigEntry-managed background work after
+   structural setup; do not await Recorder persistence from `async_setup_entry()`.
+   Later interval callbacks are themselves asynchronous and owned by Home Assistant's
+   event scheduler, so they do not spawn a detached task on each tick. If a statistics
+   import is already running, skip that interval tick instead of queueing another
+   waiter.
 7. Serialize provisional and authoritative history writes with one integration-level
    lock. After every E-REDES historical synchronization, refresh the provisional
    current day inline in the already-managed historical task so a correction to
    yesterday's cumulative sum propagates into today's provisional cumulative rows.
-   External-statistic imports are asynchronous:
-   Recorder may dequeue an import before `async_block_till_done()` observes it as
-   pending. Verify a write by polling the imported boundary rows until the expected
-   `state` and cumulative `sum` become visible, rather than assuming one Recorder
-   barrier proves the database transaction has completed.
+   External-statistic imports are asynchronous. Verify a write by polling the
+   imported boundary rows until the expected `state` and cumulative `sum` become
+   visible. Do not await Recorder's commit barrier: during Home Assistant startup it
+   can remain unresolved while Recorder is not ready, which would hold the statistics
+   lock and suppress later provisional ticks. The polling window is strictly bounded.
 8. Never synthesize provisional rows for completed historical days. At midnight the
    fallback moves to the new current day. The completed day's provisional rows remain
    only until the normal E-REDES historical synchronization receives and overwrites
@@ -74,13 +75,12 @@ Home Assistant's Energy preferences expose individual electrical consumers under
     the historical importer performs its follow-up refresh inline. This avoids orphaned
     provisional tasks during reload, shutdown, or timer overlap.
 12. Remote E-REDES availability is not a prerequisite for loading the integration.
-    Use the coordinator's non-fatal `async_refresh()` during setup rather than
-    `async_config_entry_first_refresh()`. Authentication failures still mark remote
-    entities unavailable and initiate Home Assistant reauthentication, but setup
-    continues so the local provisional scheduler remains installed. If that initial
-    remote refresh failed, skip the initial historical backfill and rely on the
-    immediate local provisional refresh; remote history resumes after successful
-    reauthentication/reload.
+    `async_setup_entry()` performs structural setup only, then queues the initial
+    coordinator `async_refresh()` as ConfigEntry-managed background work. Authentication
+    failures still mark remote entities unavailable and initiate Home Assistant
+    reauthentication, but they cannot block integration setup. Start the initial
+    historical backfill only after that background remote refresh succeeds; the local
+    provisional scheduler and initial local background refresh operate independently.
 
 ## Consequences
 

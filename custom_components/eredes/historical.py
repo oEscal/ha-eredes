@@ -718,14 +718,14 @@ async def _async_verify_statistics_import(
     stat_id: str,
     statistics: list[StatisticData],
 ) -> bool:
-    """Wait until Recorder exposes the imported boundary rows.
+    """Poll until Recorder exposes the imported boundary rows.
 
-    ``async_block_till_done`` can return while an import task is already dequeued
-    and still committing. Polling the actual statistic closes that race and also
-    tolerates Recorder re-queuing a transiently failed database job.
+    Recorder's commit barrier is intentionally not awaited here: during Home
+    Assistant startup it can remain unresolved while Recorder is not yet ready,
+    which would hold the integration's statistics lock indefinitely. Polling the
+    exact persisted statistic is both the stronger correctness check and strictly
+    time-bounded.
     """
-    await recorder.async_block_till_done()
-
     for expected in (statistics[0], statistics[-1]):
         start = expected["start"]
         actual = None
@@ -751,7 +751,6 @@ async def _async_verify_statistics_import(
 
             if attempt < 49:
                 await asyncio.sleep(0.1)
-                await recorder.async_block_till_done()
         else:
             if actual is None:
                 _LOGGER.warning(

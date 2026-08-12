@@ -51,6 +51,61 @@ async def test_provisional_tick_skips_while_statistics_import_is_running() -> No
     lock.release()
 
 
+async def test_setup_does_not_wait_for_remote_or_provisional_work(
+    hass: HomeAssistant,
+) -> None:
+    """Slow remote/local work must never hold config-entry setup open."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        data={CONF_ACCESS_TOKEN: TOKEN, CONF_CPE: CPE},
+        unique_id=CPE,
+    )
+    entry.add_to_hass(hass)
+
+    coordinator = MagicMock()
+    coordinator.cpe = CPE
+    coordinator.client = MagicMock()
+    coordinator.async_refresh = AsyncMock(
+        side_effect=AssertionError("remote refresh must run after setup")
+    )
+    background_task = MagicMock()
+    background_task.done.return_value = False
+    created_names: list[str] = []
+
+    def create_background_task(_hass, target, *, name: str):
+        created_names.append(name)
+        target.close()
+        return background_task
+
+    with (
+        patch("custom_components.eredes.ERedesCoordinator", return_value=coordinator),
+        patch.object(hass.config_entries, "async_forward_entry_setups", AsyncMock()),
+        patch.object(
+            entry,
+            "async_create_background_task",
+            side_effect=create_background_task,
+        ),
+        patch("custom_components.eredes.async_track_time_change"),
+        patch("custom_components.eredes.async_track_time_interval"),
+        patch(
+            "custom_components.eredes._async_import_provisional_data",
+            AsyncMock(
+                side_effect=AssertionError(
+                    "provisional refresh must run after setup"
+                )
+            ),
+        ),
+    ):
+        assert await async_setup_entry(hass, entry) is True
+
+    coordinator.async_refresh.assert_not_awaited()
+    assert created_names == [
+        "eredes_initial_provisional_refresh",
+        "eredes_initial_remote_refresh",
+    ]
+
+
 async def test_setup_keeps_local_provisional_refresh_when_remote_auth_is_unavailable(
     hass: HomeAssistant,
 ) -> None:
@@ -74,10 +129,10 @@ async def test_setup_keeps_local_provisional_refresh_when_remote_auth_is_unavail
     )
     background_task = MagicMock()
     background_task.done.return_value = False
+    created_coroutines = {}
 
     def create_background_task(_hass, target, *, name: str):
-        del name
-        target.close()
+        created_coroutines[name] = target
         return background_task
 
     with (
@@ -100,6 +155,12 @@ async def test_setup_keeps_local_provisional_refresh_when_remote_auth_is_unavail
     ):
         assert await async_setup_entry(hass, entry) is True
 
+    coordinator.async_refresh.assert_not_awaited()
+    import_provisional.assert_not_awaited()
+
+    await created_coroutines["eredes_initial_remote_refresh"]
+    await created_coroutines["eredes_initial_provisional_refresh"]
+
     coordinator.async_refresh.assert_awaited_once_with()
     coordinator.async_config_entry_first_refresh.assert_not_awaited()
     import_provisional.assert_awaited_once_with(hass, entry, coordinator)
@@ -108,10 +169,10 @@ async def test_setup_keeps_local_provisional_refresh_when_remote_auth_is_unavail
     assert track_time_interval.call_args.args[2] == timedelta(minutes=7)
 
 
-async def test_setup_runs_history_in_background_and_schedules_daily_5am(
+async def test_setup_schedules_initial_jobs_and_daily_history_5am(
     hass: HomeAssistant,
 ) -> None:
-    """History sync runs off bootstrap and repeats every day at 05:00 local time."""
+    """Setup queues non-blocking initial jobs and daily history at 05:00."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         version=2,
@@ -157,11 +218,14 @@ async def test_setup_runs_history_in_background_and_schedules_daily_5am(
     ):
         assert await async_setup_entry(hass, entry) is True
 
-        create_background_task_mock.assert_called_once()
-        assert (
-            create_background_task_mock.call_args.kwargs["name"]
-            == "eredes_historical_import"
-        )
+        assert create_background_task_mock.call_count == 2
+        assert [
+            call.kwargs["name"]
+            for call in create_background_task_mock.call_args_list
+        ] == [
+            "eredes_initial_provisional_refresh",
+            "eredes_initial_remote_refresh",
+        ]
         track_time_change.assert_called_once()
         track_time_interval.assert_called_once()
         assert track_time_interval.call_args.args[2] == timedelta(minutes=15)
@@ -175,18 +239,20 @@ async def test_setup_runs_history_in_background_and_schedules_daily_5am(
         provisional_job = provisional_callback(MagicMock())
         assert provisional_job is not None
         await provisional_job
-        assert import_provisional.await_count == 2
-        import_provisional.assert_awaited_with(hass, entry, coordinator)
-        create_background_task_mock.assert_called_once()
+        import_provisional.assert_awaited_once_with(hass, entry, coordinator)
+        assert create_background_task_mock.call_count == 2
 
         daily_callback = track_time_change.call_args.args[1]
         daily_callback(MagicMock())
-        create_background_task_mock.assert_called_once()
+        assert create_background_task_mock.call_count == 3
+
+        daily_callback(MagicMock())
+        assert create_background_task_mock.call_count == 3
 
         background_task.done.return_value = True
         daily_callback(MagicMock())
-        assert create_background_task_mock.call_count == 2
-        assert len(created_coroutines) == 2
+        assert create_background_task_mock.call_count == 4
+        assert len(created_coroutines) == 4
 
 
 async def test_setup_uses_hourly_history_frequency(
@@ -238,7 +304,7 @@ async def test_setup_uses_hourly_history_frequency(
         hourly_callback = track_time_change.call_args.args[1]
         hourly_callback(MagicMock())
         hourly_callback(MagicMock())
-        assert create_background_task_mock.call_count == 3
+        assert create_background_task_mock.call_count == 4
 
 
 async def test_setup_uses_configured_history_schedule_and_frequency(
@@ -291,10 +357,10 @@ async def test_setup_uses_configured_history_schedule_and_frequency(
 
         daily_callback(MagicMock())
         daily_callback(MagicMock())
-        create_background_task_mock.assert_called_once()
+        assert create_background_task_mock.call_count == 2
 
         daily_callback(MagicMock())
-        assert create_background_task_mock.call_count == 2
+        assert create_background_task_mock.call_count == 3
 
 
 @pytest.mark.parametrize("legacy_key", ["session_cookie", "aat_token"])

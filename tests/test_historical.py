@@ -560,14 +560,16 @@ async def test_history_sync_publishes_latest_real_consumption_day() -> None:
 
 
 @pytest.mark.asyncio
-async def test_statistics_import_waits_for_commit_and_verifies_boundaries() -> None:
-    """A queued import is only successful after recorder commit and read-back."""
+async def test_statistics_import_polls_boundaries_without_recorder_barrier() -> None:
+    """Verification must not depend on Recorder's potentially blocking barrier."""
     stat_id = statistic_id(CPE)
     statistics = _aggregate_to_hourly_statistics(
         [_reading(0, 15, 1000.0), _reading(1, 15, 2000.0)]
     )
     recorder = MagicMock()
-    recorder.async_block_till_done = AsyncMock()
+    recorder.async_block_till_done = AsyncMock(
+        side_effect=AssertionError("verification must not await Recorder barrier")
+    )
     recorder.async_add_executor_job = AsyncMock(
         side_effect=[
             {stat_id: [{"state": 1.0, "sum": 1.0}]},
@@ -580,7 +582,7 @@ async def test_statistics_import_waits_for_commit_and_verifies_boundaries() -> N
     )
 
     assert verified is True
-    recorder.async_block_till_done.assert_awaited_once_with()
+    recorder.async_block_till_done.assert_not_awaited()
     assert recorder.async_add_executor_job.await_count == 2
 
 
