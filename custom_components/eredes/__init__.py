@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import time, timedelta
 from typing import TYPE_CHECKING
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import Platform
 from homeassistant.core import callback
 from homeassistant.helpers.event import (
@@ -162,6 +162,10 @@ def _start_provisional_import(
     entry: ERedesConfigEntry,
 ) -> None:
     """Start a provisional current-day import unless one is already running."""
+    if entry.state is ConfigEntryState.UNLOAD_IN_PROGRESS:
+        _LOGGER.debug("Skipping provisional energy import while entry is unloading")
+        return
+
     existing_task = entry.runtime_data.provisional_import_task
     if existing_task is not None and not existing_task.done():
         _LOGGER.debug("Provisional energy import already running; skipping duplicate")

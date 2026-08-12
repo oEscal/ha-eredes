@@ -7,9 +7,14 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.eredes import async_migrate_entry, async_setup_entry
+from custom_components.eredes import (
+    _start_provisional_import,
+    async_migrate_entry,
+    async_setup_entry,
+)
 from custom_components.eredes.const import (
     CONF_ACCESS_TOKEN,
     CONF_CPE,
@@ -25,6 +30,17 @@ if TYPE_CHECKING:
 
 CPE = "PT0002000012345678AB"
 TOKEN = "eyJ.mock.jwt"
+
+
+def test_provisional_import_is_not_started_while_entry_unloads() -> None:
+    """The interval callback cannot create a new task during config-entry teardown."""
+    entry = MagicMock()
+    entry.state = ConfigEntryState.UNLOAD_IN_PROGRESS
+    entry.runtime_data.provisional_import_task = None
+
+    _start_provisional_import(MagicMock(), entry)
+
+    entry.async_create_background_task.assert_not_called()
 
 
 async def test_setup_runs_history_in_background_and_schedules_daily_5am(

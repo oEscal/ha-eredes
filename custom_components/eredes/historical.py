@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, replace
@@ -717,45 +718,58 @@ async def _async_verify_statistics_import(
     stat_id: str,
     statistics: list[StatisticData],
 ) -> bool:
-    """Wait for the recorder commit and verify the imported boundary rows."""
+    """Wait until Recorder exposes the imported boundary rows.
+
+    ``async_block_till_done`` can return while an import task is already dequeued
+    and still committing. Polling the actual statistic closes that race and also
+    tolerates Recorder re-queuing a transiently failed database job.
+    """
     await recorder.async_block_till_done()
 
     for expected in (statistics[0], statistics[-1]):
         start = expected["start"]
-        persisted = await recorder.async_add_executor_job(
-            statistics_during_period,
-            hass,
-            start,
-            start + timedelta(hours=1),
-            {stat_id},
-            "hour",
-            None,
-            {"state", "sum"},
-        )
-        rows = persisted.get(stat_id, [])
-        if not rows:
-            _LOGGER.warning(
-                "Recorder did not persist expected statistics for %s at %s",
-                stat_id,
-                start.isoformat(),
+        actual = None
+        for attempt in range(50):
+            persisted = await recorder.async_add_executor_job(
+                statistics_during_period,
+                hass,
+                start,
+                start + timedelta(hours=1),
+                {stat_id},
+                "hour",
+                None,
+                {"state", "sum"},
             )
-            return False
+            rows = persisted.get(stat_id, [])
+            if rows:
+                actual = rows[0]
+                if (
+                    actual.get("state") == expected.get("state")
+                    and actual.get("sum") == expected.get("sum")
+                ):
+                    break
 
-        actual = rows[0]
-        if (
-            actual.get("state") != expected.get("state")
-            or actual.get("sum") != expected.get("sum")
-        ):
-            _LOGGER.warning(
-                "Recorder statistics verification failed for %s at %s: expected "
-                "state=%s sum=%s, got state=%s sum=%s",
-                stat_id,
-                start.isoformat(),
-                expected.get("state"),
-                expected.get("sum"),
-                actual.get("state"),
-                actual.get("sum"),
-            )
+            if attempt < 49:
+                await asyncio.sleep(0.1)
+                await recorder.async_block_till_done()
+        else:
+            if actual is None:
+                _LOGGER.warning(
+                    "Recorder did not persist expected statistics for %s at %s",
+                    stat_id,
+                    start.isoformat(),
+                )
+            else:
+                _LOGGER.warning(
+                    "Recorder statistics verification failed for %s at %s: expected "
+                    "state=%s sum=%s, got state=%s sum=%s",
+                    stat_id,
+                    start.isoformat(),
+                    expected.get("state"),
+                    expected.get("sum"),
+                    actual.get("state"),
+                    actual.get("sum"),
+                )
             return False
 
     return True

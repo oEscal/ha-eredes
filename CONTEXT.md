@@ -90,8 +90,10 @@ past hours, while 5-minute short-term `change` values keep the open current hour
 the cumulative sum is seeded from the latest E-REDES statistic before local midnight,
 searching daily-reduced history rather than only the preceding 24 hours because
 E-REDES can lag by multiple days. If no prior cumulative sum is available, no
-provisional rows are written instead of starting a new zero-based series. The estimate
-refreshes every 15 minutes using local Home Assistant data only. It is a lower bound,
+provisional rows are written instead of starting a new zero-based series. Recorder
+imports are verified by polling the persisted boundary rows because an asynchronous
+import can already be dequeued while its database transaction is still in flight. The
+estimate refreshes every 15 minutes using local Home Assistant data only. It is a lower bound,
 because untracked loads are absent; solar/battery installations can also
 make household device load differ from grid import. Completed-day provisional rows
 are replaced by the normal E-REDES history/reconciliation path once E-REDES data is

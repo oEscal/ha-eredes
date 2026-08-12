@@ -46,7 +46,11 @@ Home Assistant's Energy preferences expose individual electrical consumers under
 7. Serialize provisional and authoritative history writes with one integration-level
    lock. After every E-REDES historical synchronization, refresh the provisional
    current day again so a correction to yesterday's cumulative sum propagates into
-   today's provisional cumulative rows.
+   today's provisional cumulative rows. External-statistic imports are asynchronous:
+   Recorder may dequeue an import before `async_block_till_done()` observes it as
+   pending. Verify a write by polling the imported boundary rows until the expected
+   `state` and cumulative `sum` become visible, rather than assuming one Recorder
+   barrier proves the database transaction has completed.
 8. Never synthesize provisional rows for completed historical days. At midnight the
    fallback moves to the new current day. The completed day's provisional rows remain
    only until the normal E-REDES historical synchronization receives and overwrites
@@ -59,6 +63,9 @@ Home Assistant's Energy preferences expose individual electrical consumers under
     rather than inventing zero consumption. Likewise, if no prior E-REDES cumulative
     statistic can be found, do not write a zero-based provisional series: this would
     create a large negative discontinuity relative to any older cumulative history.
+11. Do not create a new provisional background task after the config entry enters
+    `UNLOAD_IN_PROGRESS`; this closes the timer/unload race that could otherwise leave
+    a just-created task pending while Home Assistant tears down the integration.
 
 ## Consequences
 
