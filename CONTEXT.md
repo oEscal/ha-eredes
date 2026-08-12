@@ -87,9 +87,12 @@ It is derived from Home Assistant Energy Dashboard `device_consumption` statisti
 summing only top-level entries (those without `included_in_stat`) and excluding the
 E-REDES statistic itself. Recorder finalized hourly `change` values are combined for
 past hours, while 5-minute short-term `change` values keep the open current hour fresh;
-the cumulative sum is seeded from the last E-REDES statistic before local midnight.
-The estimate refreshes every 15 minutes using local Home Assistant data only. It is a
-lower bound, because untracked loads are absent; solar/battery installations can also
+the cumulative sum is seeded from the latest E-REDES statistic before local midnight,
+searching daily-reduced history rather than only the preceding 24 hours because
+E-REDES can lag by multiple days. If no prior cumulative sum is available, no
+provisional rows are written instead of starting a new zero-based series. The estimate
+refreshes every 15 minutes using local Home Assistant data only. It is a lower bound,
+because untracked loads are absent; solar/battery installations can also
 make household device load differ from grid import. Completed-day provisional rows
 are replaced by the normal E-REDES history/reconciliation path once E-REDES data is
 fetched. Provisional data never affects **Last Real Data Day** or **Last Matching

@@ -40,8 +40,12 @@ def _reading(hour: int, minute: int, value_wh: float) -> ConsumptionReading:
 
 
 @pytest.mark.asyncio
-async def test_current_day_fallback_uses_top_level_energy_dashboard_devices() -> None:
+@pytest.mark.freeze_time("2026-08-12 10:30:00+00:00")
+async def test_current_day_fallback_uses_top_level_energy_dashboard_devices(
+    freezer,
+) -> None:
     """Current-day fallback sums only top-level device consumption statistics."""
+    del freezer
     stat_id = statistic_id(CPE)
     now_utc = datetime.now(tz=UTC)
     today_start = now_utc.astimezone(LISBON).replace(
@@ -50,6 +54,7 @@ async def test_current_day_fallback_uses_top_level_energy_dashboard_devices() ->
     hour_0 = today_start
     hour_1 = today_start + timedelta(hours=1)
     current_hour = now_utc.replace(minute=0, second=0, microsecond=0)
+    authoritative_seed_start = today_start - timedelta(days=2)
 
     manager = SimpleNamespace(
         data={
@@ -71,11 +76,15 @@ async def test_current_day_fallback_uses_top_level_energy_dashboard_devices() ->
         statistic_ids = _args[3]
         period = _args[4]
         if statistic_ids == {stat_id}:
-            return {
-                stat_id: [
-                    {"start": today_start - timedelta(hours=1), "sum": 100.0}
-                ]
-            }
+            query_start = _args[1]
+            query_end = _args[2]
+            if query_start <= authoritative_seed_start < query_end:
+                return {
+                    stat_id: [
+                        {"start": authoritative_seed_start.timestamp(), "sum": 100.0}
+                    ]
+                }
+            return {}
         assert statistic_ids == {"sensor.kitchen_energy", "sensor.office_energy"}
         if period == "5minute":
             return {
@@ -125,6 +134,57 @@ async def test_current_day_fallback_uses_top_level_energy_dashboard_devices() ->
         (hour_1, pytest.approx(0.5), pytest.approx(102.2)),
         (current_hour, pytest.approx(0.15), pytest.approx(102.35)),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.freeze_time("2026-08-12 10:30:00+00:00")
+async def test_current_day_fallback_skips_without_prior_cumulative_sum(freezer) -> None:
+    """A missing seed must never create a new zero-based cumulative series."""
+    del freezer
+    stat_id = statistic_id(CPE)
+    manager = SimpleNamespace(
+        data={
+            "energy_sources": [],
+            "device_consumption": [{"stat_consumption": "sensor.office_energy"}],
+        }
+    )
+    recorder = SimpleNamespace(async_add_executor_job=AsyncMock())
+
+    def statistics_result(_func, *_args):
+        statistic_ids = _args[3]
+        if statistic_ids == {stat_id}:
+            return {}
+        if _args[4] == "5minute":
+            return {}
+        return {
+            "sensor.office_energy": [
+                {
+                    "start": datetime(2026, 8, 11, 23, 0, tzinfo=UTC).timestamp(),
+                    "change": 0.2,
+                }
+            ]
+        }
+
+    recorder.async_add_executor_job.side_effect = statistics_result
+    with (
+        patch(
+            "custom_components.eredes.historical.async_get_manager",
+            AsyncMock(return_value=manager),
+        ),
+        patch(
+            "custom_components.eredes.historical.get_instance", return_value=recorder
+        ),
+        patch(
+            "custom_components.eredes.historical._async_persist_statistics",
+            AsyncMock(return_value=True),
+        ) as persist_statistics,
+    ):
+        written = await async_import_provisional_current_day(
+            MagicMock(), SimpleNamespace(cpe=CPE)
+        )
+
+    assert written is False
+    persist_statistics.assert_not_awaited()
 
 
 def test_statistic_id_is_valid_external_id() -> None:

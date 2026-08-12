@@ -37,8 +37,10 @@ Home Assistant's Energy preferences expose individual electrical consumers under
    5-minute short-term `change` values for the still-open current hour, then combine
    the selected device statistics into hourly buckets.
 5. Seed the provisional day's cumulative `sum` from the latest persisted E-REDES
-   statistic before local midnight. Write the provisional hourly rows to the same
-   E-REDES external statistic, allowing later runs to update those hour starts.
+   statistic before local midnight. Because E-REDES can lag by more than 24 hours,
+   find that seed from daily-reduced statistics across the supported history window,
+   not only the immediately preceding day. Write the provisional hourly rows to the
+   same E-REDES external statistic, allowing later runs to update those hour starts.
 6. Refresh the provisional current day every 15 minutes using only local Home
    Assistant data. This refresh does not make additional E-REDES API requests.
 7. Serialize provisional and authoritative history writes with one integration-level
@@ -54,7 +56,9 @@ Home Assistant's Energy preferences expose individual electrical consumers under
    Matching 15-Min Data Day**. Those sensors continue to depend exclusively on
    E-REDES data.
 10. If no usable top-level device statistics exist, leave the current day absent
-    rather than inventing zero consumption.
+    rather than inventing zero consumption. Likewise, if no prior E-REDES cumulative
+    statistic can be found, do not write a zero-based provisional series: this would
+    create a large negative discontinuity relative to any older cumulative history.
 
 ## Consequences
 

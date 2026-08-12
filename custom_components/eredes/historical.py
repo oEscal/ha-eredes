@@ -879,18 +879,35 @@ async def async_import_provisional_current_day(
         _LOGGER.debug("No current-day Energy Dashboard device statistics available")
         return False
 
+    # E-REDES can lag by more than one day, so the latest cumulative row may
+    # be older than the immediately preceding 24-hour window. Query daily
+    # reductions across the supported history range: each daily row retains
+    # that day's final cumulative sum while avoiding thousands of hourly rows.
+    # Ending just before local midnight excludes every provisional row for today.
     seed_statistics = await recorder.async_add_executor_job(
         statistics_during_period,
         hass,
-        today_start_utc - timedelta(days=1),
-        today_start_utc,
+        today_start_utc - timedelta(days=TOTAL_HISTORY_DAYS + 1),
+        today_start_utc - timedelta(microseconds=1),
         {stat_id},
-        "hour",
+        "day",
         None,
         {"sum"},
     )
     seed_rows = seed_statistics.get(stat_id, [])
-    cumulative_sum = float(seed_rows[-1].get("sum") or 0.0) if seed_rows else 0.0
+    seed_sum = seed_rows[-1].get("sum") if seed_rows else None
+    if seed_sum is None:
+        _LOGGER.warning(
+            "Skipping provisional current-day energy because no prior E-REDES "
+            "cumulative statistic is available before %s",
+            today_start_utc.isoformat(),
+        )
+        return False
+    cumulative_sum = float(seed_sum)
+    _LOGGER.debug(
+        "Seeding provisional current-day energy from prior cumulative sum %.3f kWh",
+        cumulative_sum,
+    )
 
     statistics: list[StatisticData] = []
     for hour_start in sorted(hourly_changes):
