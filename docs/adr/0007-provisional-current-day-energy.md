@@ -42,11 +42,16 @@ Home Assistant's Energy preferences expose individual electrical consumers under
    not only the immediately preceding day. Write the provisional hourly rows to the
    same E-REDES external statistic, allowing later runs to update those hour starts.
 6. Refresh the provisional current day every 15 minutes using only local Home
-   Assistant data. This refresh does not make additional E-REDES API requests.
+   Assistant data. This refresh does not make additional E-REDES API requests. The
+   interval callback is itself asynchronous and is owned by Home Assistant's event
+   scheduler; it does not spawn a second detached integration background task. If a
+   statistics import is already running, skip that interval tick instead of queueing
+   another waiter.
 7. Serialize provisional and authoritative history writes with one integration-level
    lock. After every E-REDES historical synchronization, refresh the provisional
-   current day again so a correction to yesterday's cumulative sum propagates into
-   today's provisional cumulative rows. External-statistic imports are asynchronous:
+   current day inline in the already-managed historical task so a correction to
+   yesterday's cumulative sum propagates into today's provisional cumulative rows.
+   External-statistic imports are asynchronous:
    Recorder may dequeue an import before `async_block_till_done()` observes it as
    pending. Verify a write by polling the imported boundary rows until the expected
    `state` and cumulative `sum` become visible, rather than assuming one Recorder
@@ -63,9 +68,10 @@ Home Assistant's Energy preferences expose individual electrical consumers under
     rather than inventing zero consumption. Likewise, if no prior E-REDES cumulative
     statistic can be found, do not write a zero-based provisional series: this would
     create a large negative discontinuity relative to any older cumulative history.
-11. Do not create a new provisional background task after the config entry enters
-    `UNLOAD_IN_PROGRESS`; this closes the timer/unload race that could otherwise leave
-    a just-created task pending while Home Assistant tears down the integration.
+11. Do not create a separate `eredes_provisional_current_day_import` task. Home
+    Assistant's interval scheduler owns scheduled provisional refresh coroutines, and
+    the historical importer performs its follow-up refresh inline. This avoids orphaned
+    provisional tasks during reload, shutdown, or timer overlap.
 
 ## Consequences
 

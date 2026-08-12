@@ -6,9 +6,10 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import time, timedelta
+from functools import partial
 from typing import TYPE_CHECKING
 
-from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import callback
 from homeassistant.helpers.event import (
@@ -49,7 +50,6 @@ class ERedesData:
     client: ERedesClient
     statistics_import_lock: asyncio.Lock
     historical_import_task: asyncio.Task[None] | None = None
-    provisional_import_task: asyncio.Task[None] | None = None
     history_sync_days_elapsed: int = 0
 
 
@@ -100,7 +100,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ERedesConfigEntry) -> bo
     entry.async_on_unload(remove_history_schedule)
     remove_provisional_schedule = async_track_time_interval(
         hass,
-        lambda now: _handle_provisional_sync(hass, entry, now),
+        partial(_handle_provisional_sync, hass, entry),
         timedelta(minutes=15),
         name="E-REDES provisional current-day energy",
     )
@@ -156,36 +156,20 @@ def _start_historical_import(
     )
 
 
-@callback
-def _start_provisional_import(
-    hass: HomeAssistant,
-    entry: ERedesConfigEntry,
-) -> None:
-    """Start a provisional current-day import unless one is already running."""
-    if entry.state is ConfigEntryState.UNLOAD_IN_PROGRESS:
-        _LOGGER.debug("Skipping provisional energy import while entry is unloading")
-        return
-
-    existing_task = entry.runtime_data.provisional_import_task
-    if existing_task is not None and not existing_task.done():
-        _LOGGER.debug("Provisional energy import already running; skipping duplicate")
-        return
-
-    entry.runtime_data.provisional_import_task = entry.async_create_background_task(
-        hass,
-        _async_import_provisional_data(hass, entry, entry.runtime_data.coordinator),
-        name="eredes_provisional_current_day_import",
-    )
-
-
-@callback
-def _handle_provisional_sync(
+async def _handle_provisional_sync(
     hass: HomeAssistant,
     entry: ERedesConfigEntry,
     _now: datetime,
 ) -> None:
     """Refresh today's provisional Energy Dashboard-derived consumption."""
-    _start_provisional_import(hass, entry)
+    if entry.runtime_data.statistics_import_lock.locked():
+        _LOGGER.debug(
+            "Skipping scheduled provisional energy refresh while statistics import "
+            "is already running"
+        )
+        return
+
+    await _async_import_provisional_data(hass, entry, entry.runtime_data.coordinator)
 
 
 @callback
@@ -268,9 +252,9 @@ async def _async_import_historical_data(
 
     # Historical E-REDES rows are authoritative. Refresh the current-day
     # provisional tail only after that write finishes so it cannot race the
-    # history replacement/reconciliation path. If Home Assistant cancels this
-    # task during unload, CancelledError propagates and this code is not reached.
-    _start_provisional_import(hass, _entry)
+    # history replacement/reconciliation path. This runs inside the already-managed
+    # historical task rather than spawning another detached background task.
+    await _async_import_provisional_data(hass, _entry, coordinator)
 
 
 async def _async_options_updated(

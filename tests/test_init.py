@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.config_entries import ConfigEntryState
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.eredes import (
-    _start_provisional_import,
+    _handle_provisional_sync,
     async_migrate_entry,
     async_setup_entry,
 )
@@ -32,15 +32,23 @@ CPE = "PT0002000012345678AB"
 TOKEN = "eyJ.mock.jwt"
 
 
-def test_provisional_import_is_not_started_while_entry_unloads() -> None:
-    """The interval callback cannot create a new task during config-entry teardown."""
+async def test_provisional_tick_skips_while_statistics_import_is_running() -> None:
+    """A scheduled tick must not queue behind a long authoritative import."""
+    lock = asyncio.Lock()
+    await lock.acquire()
+    coordinator = MagicMock()
     entry = MagicMock()
-    entry.state = ConfigEntryState.UNLOAD_IN_PROGRESS
-    entry.runtime_data.provisional_import_task = None
+    entry.runtime_data.statistics_import_lock = lock
+    entry.runtime_data.coordinator = coordinator
 
-    _start_provisional_import(MagicMock(), entry)
+    with patch(
+        "custom_components.eredes._async_import_provisional_data",
+        AsyncMock(),
+    ) as import_provisional:
+        await _handle_provisional_sync(MagicMock(), entry, MagicMock())
 
-    entry.async_create_background_task.assert_not_called()
+    import_provisional.assert_not_awaited()
+    lock.release()
 
 
 async def test_setup_runs_history_in_background_and_schedules_daily_5am(
@@ -85,6 +93,10 @@ async def test_setup_runs_history_in_background_and_schedules_daily_5am(
             "custom_components.eredes.async_track_time_interval",
             create=True,
         ) as track_time_interval,
+        patch(
+            "custom_components.eredes._async_import_provisional_data",
+            AsyncMock(),
+        ) as import_provisional,
     ):
         assert await async_setup_entry(hass, entry) is True
 
@@ -101,6 +113,13 @@ async def test_setup_runs_history_in_background_and_schedules_daily_5am(
             "minute": 0,
             "second": 0,
         }
+
+        provisional_callback = track_time_interval.call_args.args[1]
+        provisional_job = provisional_callback(MagicMock())
+        assert provisional_job is not None
+        await provisional_job
+        import_provisional.assert_awaited_once_with(hass, entry, coordinator)
+        create_background_task_mock.assert_called_once()
 
         daily_callback = track_time_change.call_args.args[1]
         daily_callback(MagicMock())
