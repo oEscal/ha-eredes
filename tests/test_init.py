@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.eredes import (
-    _handle_provisional_sync,
-    async_migrate_entry,
-    async_setup_entry,
-)
+from custom_components.eredes import async_migrate_entry, async_setup_entry
 from custom_components.eredes.const import (
     CONF_ACCESS_TOKEN,
     CONF_CPE,
@@ -29,19 +24,6 @@ if TYPE_CHECKING:
 
 CPE = "PT0002000012345678AB"
 TOKEN = "eyJ.mock.jwt"
-
-
-async def test_provisional_tick_reconciles_live_tracker() -> None:
-    """The periodic fallback asks the live tracker to rebuild current-day state."""
-    entry = MagicMock()
-
-    with patch(
-        "custom_components.eredes._async_import_provisional_data",
-        AsyncMock(),
-    ) as import_provisional:
-        await _handle_provisional_sync(MagicMock(), entry, MagicMock())
-
-    import_provisional.assert_awaited_once_with(entry)
 
 
 async def test_setup_does_not_wait_for_remote_or_provisional_work(
@@ -80,7 +62,6 @@ async def test_setup_does_not_wait_for_remote_or_provisional_work(
             side_effect=create_background_task,
         ),
         patch("custom_components.eredes.async_track_time_change"),
-        patch("custom_components.eredes.async_track_time_interval"),
         patch(
             "custom_components.eredes._async_import_provisional_data",
             AsyncMock(
@@ -107,7 +88,6 @@ async def test_setup_keeps_local_provisional_refresh_when_remote_auth_is_unavail
         domain=DOMAIN,
         version=2,
         data={CONF_ACCESS_TOKEN: TOKEN, CONF_CPE: CPE},
-        options={"provisional_refresh_interval_minutes": 7},
         unique_id=CPE,
     )
     entry.add_to_hass(hass)
@@ -136,10 +116,7 @@ async def test_setup_keeps_local_provisional_refresh_when_remote_auth_is_unavail
             "async_create_background_task",
             side_effect=create_background_task,
         ),
-        patch("custom_components.eredes.async_track_time_change"),
-        patch(
-            "custom_components.eredes.async_track_time_interval",
-        ) as track_time_interval,
+        patch("custom_components.eredes.async_track_time_change") as track_time_change,
         patch(
             "custom_components.eredes._async_import_provisional_data",
             AsyncMock(),
@@ -158,8 +135,12 @@ async def test_setup_keeps_local_provisional_refresh_when_remote_auth_is_unavail
     coordinator.async_config_entry_first_refresh.assert_not_awaited()
     import_provisional.assert_awaited_once_with(entry)
     start_history.assert_not_called()
-    track_time_interval.assert_called_once()
-    assert track_time_interval.call_args.args[2] == timedelta(minutes=7)
+    assert track_time_change.call_count == 2
+    assert track_time_change.call_args_list[1].kwargs == {
+        "hour": 0,
+        "minute": 0,
+        "second": 0,
+    }
 
 
 async def test_setup_schedules_initial_jobs_and_daily_history_5am(
@@ -201,10 +182,6 @@ async def test_setup_schedules_initial_jobs_and_daily_history_5am(
             create=True,
         ) as track_time_change,
         patch(
-            "custom_components.eredes.async_track_time_interval",
-            create=True,
-        ) as track_time_interval,
-        patch(
             "custom_components.eredes._async_import_provisional_data",
             AsyncMock(),
         ) as import_provisional,
@@ -219,23 +196,26 @@ async def test_setup_schedules_initial_jobs_and_daily_history_5am(
             "eredes_initial_provisional_refresh",
             "eredes_initial_remote_refresh",
         ]
-        track_time_change.assert_called_once()
-        track_time_interval.assert_called_once()
-        assert track_time_interval.call_args.args[2] == timedelta(minutes=15)
-        assert track_time_change.call_args.kwargs == {
+        assert track_time_change.call_count == 2
+        assert track_time_change.call_args_list[0].kwargs == {
             "hour": 5,
             "minute": 0,
             "second": 0,
         }
+        assert track_time_change.call_args_list[1].kwargs == {
+            "hour": 0,
+            "minute": 0,
+            "second": 0,
+        }
 
-        provisional_callback = track_time_interval.call_args.args[1]
-        provisional_job = provisional_callback(MagicMock())
-        assert provisional_job is not None
-        await provisional_job
+        midnight_callback = track_time_change.call_args_list[1].args[1]
+        midnight_job = midnight_callback(MagicMock())
+        assert midnight_job is not None
+        await midnight_job
         import_provisional.assert_awaited_once_with(entry)
         assert create_background_task_mock.call_count == 2
 
-        daily_callback = track_time_change.call_args.args[1]
+        daily_callback = track_time_change.call_args_list[0].args[1]
         daily_callback(MagicMock())
         assert create_background_task_mock.call_count == 3
 
@@ -286,15 +266,19 @@ async def test_setup_uses_hourly_history_frequency(
             side_effect=create_background_task,
         ) as create_background_task_mock,
         patch("custom_components.eredes.async_track_time_change") as track_time_change,
-        patch("custom_components.eredes.async_track_time_interval"),
     ):
         assert await async_setup_entry(hass, entry) is True
 
-        assert track_time_change.call_args.kwargs == {
+        assert track_time_change.call_args_list[0].kwargs == {
             "minute": 30,
             "second": 0,
         }
-        hourly_callback = track_time_change.call_args.args[1]
+        assert track_time_change.call_args_list[1].kwargs == {
+            "hour": 0,
+            "minute": 0,
+            "second": 0,
+        }
+        hourly_callback = track_time_change.call_args_list[0].args[1]
         hourly_callback(MagicMock())
         hourly_callback(MagicMock())
         assert create_background_task_mock.call_count == 4
@@ -337,16 +321,20 @@ async def test_setup_uses_configured_history_schedule_and_frequency(
             side_effect=create_background_task,
         ) as create_background_task_mock,
         patch("custom_components.eredes.async_track_time_change") as track_time_change,
-        patch("custom_components.eredes.async_track_time_interval"),
     ):
         assert await async_setup_entry(hass, entry) is True
 
-        assert track_time_change.call_args.kwargs == {
+        assert track_time_change.call_args_list[0].kwargs == {
             "hour": 3,
             "minute": 30,
             "second": 0,
         }
-        daily_callback = track_time_change.call_args.args[1]
+        assert track_time_change.call_args_list[1].kwargs == {
+            "hour": 0,
+            "minute": 0,
+            "second": 0,
+        }
+        daily_callback = track_time_change.call_args_list[0].args[1]
 
         daily_callback(MagicMock())
         daily_callback(MagicMock())

@@ -46,12 +46,11 @@ Home Assistant's Energy preferences expose individual electrical consumers under
    same E-REDES external statistic, allowing later runs to update those hour starts.
 6. Subscribe to `state_changed` for the selected top-level device entities. Apply
    each live cumulative-state delta in memory and rewrite the provisional E-REDES
-   statistic after a 250 ms debounce, coalescing devices that report together. The
-   user-configurable 1-to-1440-minute interval (default 15 minutes) is a fallback
-   reconciliation cadence only: it rebuilds the in-memory tracker from raw state
-   history to recover missed events, Energy Dashboard configuration changes, restarts,
-   and day transitions. Queue the initial reconciliation as ConfigEntry-managed
-   background work after structural setup; do not await Recorder persistence from
+   statistic after a 250 ms debounce, coalescing devices that report together. Do not
+   use a periodic provisional refresh interval. Rebuild the in-memory tracker from raw
+   state history on startup, at local midnight, and after authoritative E-REDES
+   history updates. Queue the initial reconciliation as ConfigEntry-managed background
+   work after structural setup; do not await Recorder persistence from
    `async_setup_entry()`.
 7. Serialize provisional and authoritative history writes with one integration-level
    lock. After every E-REDES historical synchronization, refresh the provisional

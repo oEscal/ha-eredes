@@ -44,18 +44,16 @@
     "step": {
       "init": {
         "title": "E-REDES Options",
-        "description": "Configure E-REDES history synchronization and the local current-day Energy Dashboard estimate.",
+        "description": "Configure E-REDES history synchronization.",
         "data": {
           "history_sync_frequency": "History synchronization frequency",
           "history_sync_time": "History synchronization time",
-          "history_sync_interval_days": "Day interval",
-          "provisional_refresh_interval_minutes": "Current-day fallback reconciliation interval"
+          "history_sync_interval_days": "Day interval"
         },
         "data_description": {
           "history_sync_frequency": "Synchronize hourly or after a configurable number of days.",
           "history_sync_time": "For day-based schedules, the exact local Home Assistant time. For hourly schedules, the minute and second are used for every hour.",
-          "history_sync_interval_days": "Number of days between successful synchronizations when using the day-based frequency.",
-          "provisional_refresh_interval_minutes": "Fallback minutes between full reconciliations of today's provisional estimate. Tracked Energy Dashboard device entities normally update it immediately when their cumulative energy state changes."
+          "history_sync_interval_days": "Number of days between successful synchronizations when using the day-based frequency."
         }
       }
     }

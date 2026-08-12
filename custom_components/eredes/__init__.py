@@ -5,28 +5,23 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import time, timedelta
+from datetime import time
 from functools import partial
 from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import callback
-from homeassistant.helpers.event import (
-    async_track_time_change,
-    async_track_time_interval,
-)
+from homeassistant.helpers.event import async_track_time_change
 
 from .const import (
     CONF_ACCESS_TOKEN,
     CONF_HISTORY_SYNC_FREQUENCY,
     CONF_HISTORY_SYNC_INTERVAL_DAYS,
     CONF_HISTORY_SYNC_TIME,
-    CONF_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
     DEFAULT_HISTORY_SYNC_FREQUENCY,
     DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
     DEFAULT_HISTORY_SYNC_TIME,
-    DEFAULT_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
     HISTORY_SYNC_FREQUENCY_HOURLY,
     LEGACY_TOKEN_KEYS,
 )
@@ -107,25 +102,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ERedesConfigEntry) -> bo
             second=sync_time.second,
         )
     entry.async_on_unload(remove_history_schedule)
-    provisional_refresh_minutes = int(
-        entry.options.get(
-            CONF_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
-            DEFAULT_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
-        )
-    )
-    remove_provisional_schedule = async_track_time_interval(
+    remove_provisional_midnight_schedule = async_track_time_change(
         hass,
         partial(_handle_provisional_sync, hass, entry),
-        timedelta(minutes=provisional_refresh_minutes),
-        name="E-REDES provisional current-day energy",
+        hour=0,
+        minute=0,
+        second=0,
     )
-    entry.async_on_unload(remove_provisional_schedule)
+    entry.async_on_unload(remove_provisional_midnight_schedule)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     # Initial remote and local refreshes are lifecycle-managed background work.
     # They may start eagerly, but they can never hold config-entry setup open.
-    # The repeating provisional timer itself still owns later refresh coroutines
-    # directly, so no detached task is created on every interval tick.
+    # Live device events drive later updates; local midnight rebuilds the new day.
     entry.async_create_background_task(
         hass,
         _async_import_provisional_data(entry),

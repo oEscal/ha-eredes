@@ -44,18 +44,16 @@
     "step": {
       "init": {
         "title": "Opcoes E-REDES",
-        "description": "Configure a sincronizacao do historico E-REDES e a estimativa local do dia atual no painel de Energia.",
+        "description": "Configure a sincronizacao do historico E-REDES.",
         "data": {
           "history_sync_frequency": "Frequencia de sincronizacao do historico",
           "history_sync_time": "Hora de sincronizacao do historico",
-          "history_sync_interval_days": "Intervalo em dias",
-          "provisional_refresh_interval_minutes": "Intervalo de reconciliacao de seguranca da estimativa do dia atual"
+          "history_sync_interval_days": "Intervalo em dias"
         },
         "data_description": {
           "history_sync_frequency": "Sincronize de hora a hora ou apos um numero configuravel de dias.",
           "history_sync_time": "Para agendamentos em dias, e a hora local exata do Home Assistant. Para agendamentos horarios, sao usados os minutos e segundos em cada hora.",
-          "history_sync_interval_days": "Numero de dias entre sincronizacoes bem sucedidas quando e usada a frequencia baseada em dias.",
-          "provisional_refresh_interval_minutes": "Minutos de seguranca entre reconciliacoes completas da estimativa provisoria de hoje. Normalmente, as entidades de dispositivos do painel de Energia atualizam a estimativa imediatamente quando o seu valor de energia acumulada muda."
+          "history_sync_interval_days": "Numero de dias entre sincronizacoes bem sucedidas quando e usada a frequencia baseada em dias."
         }
       }
     }

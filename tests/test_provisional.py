@@ -55,7 +55,8 @@ async def test_restart_reconstructs_today_from_raw_states_and_live_values(hass) 
                 {"stat_consumption": "sensor.office_energy"},
                 {"stat_consumption": stat_id},
             ],
-        }
+        },
+        async_listen_updates=MagicMock(),
     )
     history = {
         "sensor.kitchen_energy": [
@@ -130,7 +131,8 @@ async def test_device_state_change_updates_provisional_energy_immediately(hass) 
         data={
             "energy_sources": [],
             "device_consumption": [{"stat_consumption": "sensor.kitchen_energy"}],
-        }
+        },
+        async_listen_updates=MagicMock(),
     )
     history = {
         "sensor.kitchen_energy": [
@@ -206,7 +208,8 @@ async def test_reconcile_handles_wh_units_and_total_increasing_reset(hass) -> No
         data={
             "energy_sources": [],
             "device_consumption": [{"stat_consumption": "sensor.device_energy"}],
-        }
+        },
+        async_listen_updates=MagicMock(),
     )
     history = {
         "sensor.device_energy": [

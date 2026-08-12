@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
-from homeassistant.components.energy.data import async_get_manager
+from homeassistant.components.energy.data import EnergyManager, async_get_manager
 from homeassistant.components.recorder import get_instance  # type: ignore[attr-defined]
 from homeassistant.components.recorder.history import get_significant_states
 from homeassistant.components.recorder.models import StatisticData
@@ -24,6 +24,7 @@ from homeassistant.core import (
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.util.unit_conversion import EnergyConverter
 
+from .const import DOMAIN
 from .historical import (
     LISBON,
     TOTAL_HISTORY_DAYS,
@@ -43,6 +44,14 @@ _LOGGER = logging.getLogger(__name__)
 # Multiple energy entities often report together. Coalesce that burst into one
 # external-statistics write while remaining effectively immediate to the user.
 LIVE_UPDATE_DEBOUNCE_SECONDS = 0.25
+_TRACKERS_DATA_KEY = f"{DOMAIN}_provisional_energy_trackers"
+_ENERGY_LISTENER_DATA_KEY = f"{DOMAIN}_provisional_energy_listener_registered"
+
+
+async def _async_energy_preferences_updated(hass: HomeAssistant) -> None:
+    """Reconcile active trackers after Energy Dashboard configuration changes."""
+    trackers = tuple(hass.data.get(_TRACKERS_DATA_KEY, ()))
+    await asyncio.gather(*(tracker.async_reconcile() for tracker in trackers))
 
 
 class ProvisionalEnergyTracker:
@@ -89,6 +98,7 @@ class ProvisionalEnergyTracker:
     async def _async_reconcile_once(self) -> bool:
         """Perform one complete current-day reconstruction."""
         manager = await async_get_manager(self._hass)
+        self._ensure_energy_preferences_listener(manager)
         preferences = manager.data
         stat_id = statistic_id(self._cpe)
         entity_ids = _top_level_device_entity_ids(preferences, stat_id)
@@ -290,9 +300,23 @@ class ProvisionalEnergyTracker:
             )
 
     @callback
+    def _ensure_energy_preferences_listener(self, manager: EnergyManager) -> None:
+        """Register one HA-lifetime Energy Dashboard update dispatcher."""
+        trackers = self._hass.data.setdefault(_TRACKERS_DATA_KEY, set())
+        trackers.add(self)
+        if self._hass.data.get(_ENERGY_LISTENER_DATA_KEY):
+            return
+        manager.async_listen_updates(
+            lambda: _async_energy_preferences_updated(self._hass)
+        )
+        self._hass.data[_ENERGY_LISTENER_DATA_KEY] = True
+
+    @callback
     def shutdown(self) -> None:
         """Detach listeners and pending timers when the config entry unloads."""
         self._closed = True
+        if trackers := self._hass.data.get(_TRACKERS_DATA_KEY):
+            trackers.discard(self)
         if self._remove_state_listener is not None:
             self._remove_state_listener()
             self._remove_state_listener = None

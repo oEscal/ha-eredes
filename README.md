@@ -93,12 +93,11 @@ energy entities already configured in Home Assistant's Energy Dashboard. It list
 directly for state changes from the top-level device entities and updates the E-REDES
 statistic after a short 250 ms debounce, so changes are normally visible near
 immediately. The provisional path does **not** use Home Assistant's 5-minute statistics.
-On startup and periodic reconciliation it reconstructs today's consumption from raw
-entity state history plus the latest live states, which also recovers updates missed
-during a restart. The configurable interval under **Configure** (1–1440 minutes,
-default **15 minutes**) is therefore only a fallback/reconciliation interval, not the
-normal update cadence. Devices marked as included in another statistic are excluded
-to avoid double counting. This local tracking is independent of E-REDES authentication
+On startup, at local midnight, and after authoritative E-REDES history updates it
+reconstructs today's consumption from raw entity state history plus the latest live
+states, which also recovers updates missed during a restart. There is no periodic
+provisional refresh interval. Devices marked as included in another statistic are
+excluded to avoid double counting. This local tracking is independent of E-REDES authentication
 and connectivity: an expired token or portal outage leaves the E-REDES entities
 unavailable and may start reauthentication, but does not stop the current-day Energy
 Dashboard estimate. Initial remote and provisional refreshes run as lifecycle-managed
