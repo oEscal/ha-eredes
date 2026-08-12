@@ -22,9 +22,11 @@ from .const import (
     CONF_HISTORY_SYNC_FREQUENCY,
     CONF_HISTORY_SYNC_INTERVAL_DAYS,
     CONF_HISTORY_SYNC_TIME,
+    CONF_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
     DEFAULT_HISTORY_SYNC_FREQUENCY,
     DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
     DEFAULT_HISTORY_SYNC_TIME,
+    DEFAULT_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
     HISTORY_SYNC_FREQUENCY_HOURLY,
     LEGACY_TOKEN_KEYS,
 )
@@ -61,8 +63,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ERedesConfigEntry) -> bo
     _LOGGER.debug("Setting up E-REDES integration")
     coordinator = ERedesCoordinator(hass, entry)
 
-    # Fetch initial data
-    await coordinator.async_config_entry_first_refresh()
+    # Fetch remote data without making E-REDES availability a prerequisite for
+    # loading the integration. DataUpdateCoordinator.async_refresh() records
+    # authentication/connection failures and starts reauthentication when
+    # appropriate, while still allowing the local provisional Energy Dashboard
+    # fallback to remain scheduled.
+    await coordinator.async_refresh()
 
     # Store runtime data
     entry.runtime_data = ERedesData(
@@ -74,8 +80,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ERedesConfigEntry) -> bo
     # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Synchronize once at setup, then on the user-configured local schedule.
-    _start_historical_import(hass, entry)
+    # The current-day estimate is local Home Assistant data and must not depend
+    # on E-REDES authentication or availability. Refresh it immediately at
+    # setup, even when the remote coordinator refresh failed.
+    await _async_import_provisional_data(hass, entry, coordinator)
+
+    # Historical synchronization needs E-REDES. Avoid launching a remote
+    # backfill when the bootstrap refresh already established that E-REDES is
+    # unavailable; the local provisional scheduler remains active regardless.
+    if coordinator.last_update_success:
+        _start_historical_import(hass, entry)
+    else:
+        _LOGGER.debug(
+            "Skipping initial E-REDES history import because remote refresh failed"
+        )
     sync_time = time.fromisoformat(
         str(entry.options.get(CONF_HISTORY_SYNC_TIME, DEFAULT_HISTORY_SYNC_TIME))
     )
@@ -98,10 +116,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ERedesConfigEntry) -> bo
             second=sync_time.second,
         )
     entry.async_on_unload(remove_history_schedule)
+    provisional_refresh_minutes = int(
+        entry.options.get(
+            CONF_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
+            DEFAULT_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
+        )
+    )
     remove_provisional_schedule = async_track_time_interval(
         hass,
         partial(_handle_provisional_sync, hass, entry),
-        timedelta(minutes=15),
+        timedelta(minutes=provisional_refresh_minutes),
         name="E-REDES provisional current-day energy",
     )
     entry.async_on_unload(remove_provisional_schedule)

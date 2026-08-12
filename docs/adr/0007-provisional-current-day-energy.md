@@ -41,12 +41,13 @@ Home Assistant's Energy preferences expose individual electrical consumers under
    find that seed from daily-reduced statistics across the supported history window,
    not only the immediately preceding day. Write the provisional hourly rows to the
    same E-REDES external statistic, allowing later runs to update those hour starts.
-6. Refresh the provisional current day every 15 minutes using only local Home
-   Assistant data. This refresh does not make additional E-REDES API requests. The
-   interval callback is itself asynchronous and is owned by Home Assistant's event
-   scheduler; it does not spawn a second detached integration background task. If a
-   statistics import is already running, skip that interval tick instead of queueing
-   another waiter.
+6. Refresh the provisional current day using only local Home Assistant data. The
+   interval is user-configurable from 1 to 1440 minutes and defaults to 15 minutes.
+   Run one provisional refresh immediately during config-entry setup as well. This
+   refresh does not make additional E-REDES API requests. The interval callback is
+   itself asynchronous and is owned by Home Assistant's event scheduler; it does not
+   spawn a second detached integration background task. If a statistics import is
+   already running, skip that interval tick instead of queueing another waiter.
 7. Serialize provisional and authoritative history writes with one integration-level
    lock. After every E-REDES historical synchronization, refresh the provisional
    current day inline in the already-managed historical task so a correction to
@@ -72,6 +73,14 @@ Home Assistant's Energy preferences expose individual electrical consumers under
     Assistant's interval scheduler owns scheduled provisional refresh coroutines, and
     the historical importer performs its follow-up refresh inline. This avoids orphaned
     provisional tasks during reload, shutdown, or timer overlap.
+12. Remote E-REDES availability is not a prerequisite for loading the integration.
+    Use the coordinator's non-fatal `async_refresh()` during setup rather than
+    `async_config_entry_first_refresh()`. Authentication failures still mark remote
+    entities unavailable and initiate Home Assistant reauthentication, but setup
+    continues so the local provisional scheduler remains installed. If that initial
+    remote refresh failed, skip the initial historical backfill and rely on the
+    immediate local provisional refresh; remote history resumes after successful
+    reauthentication/reload.
 
 ## Consequences
 

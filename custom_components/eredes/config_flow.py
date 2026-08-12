@@ -31,14 +31,18 @@ from .const import (
     CONF_HISTORY_SYNC_FREQUENCY,
     CONF_HISTORY_SYNC_INTERVAL_DAYS,
     CONF_HISTORY_SYNC_TIME,
+    CONF_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
     DEFAULT_HISTORY_SYNC_FREQUENCY,
     DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
     DEFAULT_HISTORY_SYNC_TIME,
+    DEFAULT_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
     DOMAIN,
     HISTORY_SYNC_FREQUENCY_DAYS,
     HISTORY_SYNC_FREQUENCY_HOURLY,
     MAX_HISTORY_SYNC_INTERVAL_DAYS,
+    MAX_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
     MIN_HISTORY_SYNC_INTERVAL_DAYS,
+    MIN_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
 )
 from .eredes_api import ERedesAuthenticationError, ERedesClient, ERedesConnectionError
 
@@ -265,6 +269,21 @@ class ERedesOptionsFlow(OptionsFlow):
                             step=1,
                             mode=NumberSelectorMode.BOX,
                             unit_of_measurement="days",
+                        )
+                    ),
+                    vol.Required(
+                        CONF_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
+                        default=self.config_entry.options.get(
+                            CONF_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
+                            DEFAULT_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=MIN_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
+                            max=MAX_PROVISIONAL_REFRESH_INTERVAL_MINUTES,
+                            step=1,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="minutes",
                         )
                     ),
                 }

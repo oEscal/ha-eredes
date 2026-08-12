@@ -166,6 +166,7 @@ async def test_options_flow_configures_history_schedule(
         CONF_HISTORY_SYNC_FREQUENCY: DEFAULT_HISTORY_SYNC_FREQUENCY,
         CONF_HISTORY_SYNC_TIME: DEFAULT_HISTORY_SYNC_TIME,
         CONF_HISTORY_SYNC_INTERVAL_DAYS: DEFAULT_HISTORY_SYNC_INTERVAL_DAYS,
+        "provisional_refresh_interval_minutes": 15,
     }
 
     result = await hass.config_entries.options.async_configure(
@@ -174,6 +175,7 @@ async def test_options_flow_configures_history_schedule(
             CONF_HISTORY_SYNC_FREQUENCY: HISTORY_SYNC_FREQUENCY_HOURLY,
             CONF_HISTORY_SYNC_TIME: "03:30:00",
             CONF_HISTORY_SYNC_INTERVAL_DAYS: 3,
+            "provisional_refresh_interval_minutes": 5,
         },
     )
 
@@ -182,6 +184,7 @@ async def test_options_flow_configures_history_schedule(
         CONF_HISTORY_SYNC_FREQUENCY: HISTORY_SYNC_FREQUENCY_HOURLY,
         CONF_HISTORY_SYNC_TIME: "03:30:00",
         CONF_HISTORY_SYNC_INTERVAL_DAYS: 3,
+        "provisional_refresh_interval_minutes": 5,
     }
 
 

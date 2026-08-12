@@ -93,9 +93,14 @@ E-REDES can lag by multiple days. If no prior cumulative sum is available, no
 provisional rows are written instead of starting a new zero-based series. Recorder
 imports are verified by polling the persisted boundary rows because an asynchronous
 import can already be dequeued while its database transaction is still in flight. The
-estimate refreshes every 15 minutes using local Home Assistant data only. It is a lower bound,
-because untracked loads are absent; solar/battery installations can also
-make household device load differ from grid import. Completed-day provisional rows
+estimate refreshes using local Home Assistant data only, independently of E-REDES
+authentication or connectivity. Setup uses a non-fatal remote coordinator refresh so
+an expired token can start reauthentication without unloading the integration or
+removing the local provisional scheduler. The refresh interval is configurable from
+1 to 1440 minutes and defaults to 15 minutes; one local refresh also runs immediately
+at integration setup. It is a lower bound because untracked loads are absent;
+solar/battery installations can also make household device load differ from grid
+import. Completed-day provisional rows
 are replaced by the normal E-REDES history/reconciliation path once E-REDES data is
 fetched. Provisional data never affects **Last Real Data Day** or **Last Matching
 15-Min Data Day**. See `docs/adr/0007`.

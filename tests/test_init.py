@@ -51,6 +51,63 @@ async def test_provisional_tick_skips_while_statistics_import_is_running() -> No
     lock.release()
 
 
+async def test_setup_keeps_local_provisional_refresh_when_remote_auth_is_unavailable(
+    hass: HomeAssistant,
+) -> None:
+    """Remote authentication must not prevent the local provisional scheduler."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        data={CONF_ACCESS_TOKEN: TOKEN, CONF_CPE: CPE},
+        options={"provisional_refresh_interval_minutes": 7},
+        unique_id=CPE,
+    )
+    entry.add_to_hass(hass)
+
+    coordinator = MagicMock()
+    coordinator.cpe = CPE
+    coordinator.client = MagicMock()
+    coordinator.async_refresh = AsyncMock()
+    coordinator.last_update_success = False
+    coordinator.async_config_entry_first_refresh = AsyncMock(
+        side_effect=AssertionError("fatal first refresh must not be used")
+    )
+    background_task = MagicMock()
+    background_task.done.return_value = False
+
+    def create_background_task(_hass, target, *, name: str):
+        del name
+        target.close()
+        return background_task
+
+    with (
+        patch("custom_components.eredes.ERedesCoordinator", return_value=coordinator),
+        patch.object(hass.config_entries, "async_forward_entry_setups", AsyncMock()),
+        patch.object(
+            entry,
+            "async_create_background_task",
+            side_effect=create_background_task,
+        ),
+        patch("custom_components.eredes.async_track_time_change"),
+        patch(
+            "custom_components.eredes.async_track_time_interval",
+        ) as track_time_interval,
+        patch(
+            "custom_components.eredes._async_import_provisional_data",
+            AsyncMock(),
+        ) as import_provisional,
+        patch("custom_components.eredes._start_historical_import") as start_history,
+    ):
+        assert await async_setup_entry(hass, entry) is True
+
+    coordinator.async_refresh.assert_awaited_once_with()
+    coordinator.async_config_entry_first_refresh.assert_not_awaited()
+    import_provisional.assert_awaited_once_with(hass, entry, coordinator)
+    start_history.assert_not_called()
+    track_time_interval.assert_called_once()
+    assert track_time_interval.call_args.args[2] == timedelta(minutes=7)
+
+
 async def test_setup_runs_history_in_background_and_schedules_daily_5am(
     hass: HomeAssistant,
 ) -> None:
@@ -66,7 +123,7 @@ async def test_setup_runs_history_in_background_and_schedules_daily_5am(
     coordinator = MagicMock()
     coordinator.cpe = CPE
     coordinator.client = MagicMock()
-    coordinator.async_config_entry_first_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
     background_task = MagicMock()
     background_task.done.return_value = False
     created_coroutines = []
@@ -118,7 +175,8 @@ async def test_setup_runs_history_in_background_and_schedules_daily_5am(
         provisional_job = provisional_callback(MagicMock())
         assert provisional_job is not None
         await provisional_job
-        import_provisional.assert_awaited_once_with(hass, entry, coordinator)
+        assert import_provisional.await_count == 2
+        import_provisional.assert_awaited_with(hass, entry, coordinator)
         create_background_task_mock.assert_called_once()
 
         daily_callback = track_time_change.call_args.args[1]
@@ -151,7 +209,7 @@ async def test_setup_uses_hourly_history_frequency(
     coordinator = MagicMock()
     coordinator.cpe = CPE
     coordinator.client = MagicMock()
-    coordinator.async_config_entry_first_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
     background_task = MagicMock()
     background_task.done.return_value = True
 
@@ -202,7 +260,7 @@ async def test_setup_uses_configured_history_schedule_and_frequency(
     coordinator = MagicMock()
     coordinator.cpe = CPE
     coordinator.client = MagicMock()
-    coordinator.async_config_entry_first_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
     background_task = MagicMock()
     background_task.done.return_value = True
 
