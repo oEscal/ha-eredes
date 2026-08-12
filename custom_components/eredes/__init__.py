@@ -31,6 +31,7 @@ from .const import (
     LEGACY_TOKEN_KEYS,
 )
 from .coordinator import ERedesCoordinator
+from .provisional import ProvisionalEnergyTracker
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -51,6 +52,7 @@ class ERedesData:
     coordinator: ERedesCoordinator
     client: ERedesClient
     statistics_import_lock: asyncio.Lock
+    provisional_tracker: ProvisionalEnergyTracker
     historical_import_task: asyncio.Task[None] | None = None
     history_sync_days_elapsed: int = 0
 
@@ -66,11 +68,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ERedesConfigEntry) -> bo
     # Store runtime data before starting any remote/local I/O. Config-entry setup
     # must remain structural so neither E-REDES nor Recorder can block Home
     # Assistant startup.
+    statistics_import_lock = asyncio.Lock()
+    provisional_tracker = ProvisionalEnergyTracker(
+        hass,
+        coordinator.cpe,
+        statistics_import_lock,
+    )
     entry.runtime_data = ERedesData(
         coordinator=coordinator,
         client=coordinator.client,
-        statistics_import_lock=asyncio.Lock(),
+        statistics_import_lock=statistics_import_lock,
+        provisional_tracker=provisional_tracker,
     )
+    entry.async_on_unload(provisional_tracker.shutdown)
 
     # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -118,7 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ERedesConfigEntry) -> bo
     # directly, so no detached task is created on every interval tick.
     entry.async_create_background_task(
         hass,
-        _async_import_provisional_data(hass, entry, coordinator),
+        _async_import_provisional_data(entry),
         name="eredes_initial_provisional_refresh",
     )
     entry.async_create_background_task(
@@ -197,19 +207,12 @@ def _start_historical_import(
 
 
 async def _handle_provisional_sync(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: ERedesConfigEntry,
     _now: datetime,
 ) -> None:
     """Refresh today's provisional Energy Dashboard-derived consumption."""
-    if entry.runtime_data.statistics_import_lock.locked():
-        _LOGGER.debug(
-            "Skipping scheduled provisional energy refresh while statistics import "
-            "is already running"
-        )
-        return
-
-    await _async_import_provisional_data(hass, entry, entry.runtime_data.coordinator)
+    await _async_import_provisional_data(entry)
 
 
 @callback
@@ -252,19 +255,12 @@ def _handle_daily_history_sync(
     _start_historical_import(hass, entry)
 
 
-async def _async_import_provisional_data(
-    hass: HomeAssistant,
-    entry: ERedesConfigEntry,
-    coordinator: ERedesCoordinator,
-) -> None:
-    """Import provisional current-day device consumption in the background."""
-    from .historical import async_import_provisional_current_day  # noqa: PLC0415
-
+async def _async_import_provisional_data(entry: ERedesConfigEntry) -> None:
+    """Reconcile live provisional current-day device consumption."""
     try:
-        async with entry.runtime_data.statistics_import_lock:
-            await async_import_provisional_current_day(hass, coordinator)
+        await entry.runtime_data.provisional_tracker.async_reconcile()
     except Exception:
-        _LOGGER.exception("Failed to import provisional current-day energy")
+        _LOGGER.exception("Failed to reconcile provisional current-day energy")
 
 
 async def _async_import_historical_data(
@@ -294,7 +290,7 @@ async def _async_import_historical_data(
     # provisional tail only after that write finishes so it cannot race the
     # history replacement/reconciliation path. This runs inside the already-managed
     # historical task rather than spawning another detached background task.
-    await _async_import_provisional_data(hass, _entry, coordinator)
+    await _async_import_provisional_data(_entry)
 
 
 async def _async_options_updated(

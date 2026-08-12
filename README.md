@@ -88,21 +88,26 @@ an hourly schedule or an every-N-days schedule. For hourly synchronization, the
 configured minute is used each hour (for example, `05:30` means `:30` every hour).
 
 Because E-REDES does not publish the current local day's load curve, the integration
-also refreshes a **provisional current-day estimate** from the individual
-electrical-device consumption statistics already configured in Home Assistant's
-Energy Dashboard. The refresh interval is configurable under **Configure** in minutes
-(1–1440), with a default of **15 minutes**. Only top-level devices are summed; a
-device marked as included in another statistic is excluded to avoid double counting.
-This local refresh is independent of E-REDES authentication and connectivity: an
-expired token or portal outage leaves the E-REDES entities unavailable and may start
-reauthentication, but does not stop the current-day Energy Dashboard estimate. Initial
-remote and provisional refreshes run as lifecycle-managed background work, so neither
-E-REDES nor Recorder can block config-entry setup during Home Assistant startup. The
-estimate is written to the same `eredes:energy_…` statistic and is replaced
-automatically by the normal E-REDES history/reconciliation path once that completed
-day's E-REDES data arrives. It is a lower-bound estimate: untracked loads are absent,
-and with solar or batteries the sum of device loads is not necessarily equal to
-physical grid import.
+also maintains a **provisional current-day estimate** from the individual electrical
+energy entities already configured in Home Assistant's Energy Dashboard. It listens
+directly for state changes from the top-level device entities and updates the E-REDES
+statistic after a short 250 ms debounce, so changes are normally visible near
+immediately. The provisional path does **not** use Home Assistant's 5-minute statistics.
+On startup and periodic reconciliation it reconstructs today's consumption from raw
+entity state history plus the latest live states, which also recovers updates missed
+during a restart. The configurable interval under **Configure** (1–1440 minutes,
+default **15 minutes**) is therefore only a fallback/reconciliation interval, not the
+normal update cadence. Devices marked as included in another statistic are excluded
+to avoid double counting. This local tracking is independent of E-REDES authentication
+and connectivity: an expired token or portal outage leaves the E-REDES entities
+unavailable and may start reauthentication, but does not stop the current-day Energy
+Dashboard estimate. Initial remote and provisional refreshes run as lifecycle-managed
+background work, so neither E-REDES nor Recorder can block config-entry setup during
+Home Assistant startup. The estimate is written to the same `eredes:energy_…`
+statistic and is replaced automatically by the normal E-REDES history/reconciliation
+path once that completed day's E-REDES data arrives. It is a lower-bound estimate:
+untracked loads are absent, and with solar or batteries the sum of device loads is not
+necessarily equal to physical grid import.
 
 Add that statistic to your Energy Dashboard:
 

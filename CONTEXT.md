@@ -83,24 +83,28 @@ set, so the sensor can move backward. For example, a latest real meter index at
 **Provisional current-day energy**:
 A temporary estimate written to the same `eredes:energy_<cpe suffix>` external
 statistic while E-REDES has no load curve for the current Europe/Lisbon calendar day.
-It is derived from Home Assistant Energy Dashboard `device_consumption` statistics,
-summing only top-level entries (those without `included_in_stat`) and excluding the
-E-REDES statistic itself. Recorder finalized hourly `change` values are combined for
-past hours, while 5-minute short-term `change` values keep the open current hour fresh;
-the cumulative sum is seeded from the latest E-REDES statistic before local midnight,
+It is derived from the live Home Assistant entities referenced by Energy Dashboard
+`device_consumption`, summing only top-level entries (those without
+`included_in_stat`) and excluding the E-REDES statistic itself. The tracker rebuilds
+today from raw Recorder state history at startup/reconciliation and then subscribes
+to each tracked entity's `state_changed` events. Cumulative-state growth is applied
+immediately, including total-increasing reset handling and unit conversion to kWh;
+near-simultaneous reports are coalesced with a 250 ms debounce before the external
+E-REDES statistic is rewritten. The provisional path does not use 5-minute statistics.
+The cumulative sum is seeded from the latest E-REDES statistic before local midnight,
 searching daily-reduced history rather than only the preceding 24 hours because
 E-REDES can lag by multiple days. If no prior cumulative sum is available, no
 provisional rows are written instead of starting a new zero-based series. Recorder
 imports are verified by polling the persisted boundary rows because an asynchronous
 import can already be dequeued while its database transaction is still in flight. The
-estimate refreshes using local Home Assistant data only, independently of E-REDES
-authentication or connectivity. Config-entry setup performs no remote or statistics
-I/O: the initial E-REDES refresh and initial local provisional refresh are managed
-background jobs, so neither portal availability nor Recorder readiness can block Home
-Assistant startup. Authentication failure can still start reauthentication without
-unloading the integration or removing the local provisional scheduler. The refresh
-interval is configurable from 1 to 1440 minutes and defaults to 15 minutes. It is a
-lower bound because untracked loads are absent;
+estimate uses local Home Assistant data only, independently of E-REDES authentication
+or connectivity. Config-entry setup performs no remote or statistics I/O: the initial
+E-REDES refresh and initial local provisional reconciliation are managed background
+jobs, so neither portal availability nor Recorder readiness can block Home Assistant
+startup. Authentication failure can still start reauthentication without unloading
+the integration or removing the live tracker. The configurable 1-to-1440-minute
+interval (default 15) is only a fallback reconciliation cadence; entity events are the
+normal near-real-time update mechanism. It is a lower bound because untracked loads are absent;
 solar/battery installations can also make household device load differ from grid
 import. Completed-day provisional rows
 are replaced by the normal E-REDES history/reconciliation path once E-REDES data is

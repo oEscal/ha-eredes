@@ -33,22 +33,26 @@ Home Assistant's Energy preferences expose individual electrical consumers under
    because its consumption is already represented by its parent. Also exclude the
    E-REDES statistic itself to prevent recursive feedback if it is accidentally added
    as an individual device.
-4. Query Recorder for finalized hourly `change` values in kWh for earlier hours and
-   5-minute short-term `change` values for the still-open current hour, then combine
-   the selected device statistics into hourly buckets.
+4. Track only `device_consumption` entries whose `stat_consumption` is a live Home
+   Assistant entity id. Reconstruct today's consumption from raw Recorder state
+   history plus the latest `hass.states` values, convert cumulative energy to kWh,
+   treat a cumulative decrease as a `total_increasing` reset, and bucket each positive
+   delta into the UTC hour in which the entity changed. Do not use Recorder's 5-minute
+   statistics for the provisional path.
 5. Seed the provisional day's cumulative `sum` from the latest persisted E-REDES
    statistic before local midnight. Because E-REDES can lag by more than 24 hours,
    find that seed from daily-reduced statistics across the supported history window,
    not only the immediately preceding day. Write the provisional hourly rows to the
    same E-REDES external statistic, allowing later runs to update those hour starts.
-6. Refresh the provisional current day using only local Home Assistant data. The
-   interval is user-configurable from 1 to 1440 minutes and defaults to 15 minutes.
-   Queue one initial provisional refresh as ConfigEntry-managed background work after
-   structural setup; do not await Recorder persistence from `async_setup_entry()`.
-   Later interval callbacks are themselves asynchronous and owned by Home Assistant's
-   event scheduler, so they do not spawn a detached task on each tick. If a statistics
-   import is already running, skip that interval tick instead of queueing another
-   waiter.
+6. Subscribe to `state_changed` for the selected top-level device entities. Apply
+   each live cumulative-state delta in memory and rewrite the provisional E-REDES
+   statistic after a 250 ms debounce, coalescing devices that report together. The
+   user-configurable 1-to-1440-minute interval (default 15 minutes) is a fallback
+   reconciliation cadence only: it rebuilds the in-memory tracker from raw state
+   history to recover missed events, Energy Dashboard configuration changes, restarts,
+   and day transitions. Queue the initial reconciliation as ConfigEntry-managed
+   background work after structural setup; do not await Recorder persistence from
+   `async_setup_entry()`.
 7. Serialize provisional and authoritative history writes with one integration-level
    lock. After every E-REDES historical synchronization, refresh the provisional
    current day inline in the already-managed historical task so a correction to
@@ -70,10 +74,11 @@ Home Assistant's Energy preferences expose individual electrical consumers under
     rather than inventing zero consumption. Likewise, if no prior E-REDES cumulative
     statistic can be found, do not write a zero-based provisional series: this would
     create a large negative discontinuity relative to any older cumulative history.
-11. Do not create a separate `eredes_provisional_current_day_import` task. Home
-    Assistant's interval scheduler owns scheduled provisional refresh coroutines, and
-    the historical importer performs its follow-up refresh inline. This avoids orphaned
-    provisional tasks during reload, shutdown, or timer overlap.
+11. The live tracker owns exactly one indexed state-change subscription and one
+    optional debounce timer, both removed on config-entry unload. Home Assistant's
+    interval scheduler owns fallback reconciliation coroutines, and the historical
+    importer performs its follow-up reconciliation inline. Do not create a detached
+    task for every device event or interval tick.
 12. Remote E-REDES availability is not a prerequisite for loading the integration.
     `async_setup_entry()` performs structural setup only, then queues the initial
     coordinator `async_refresh()` as ConfigEntry-managed background work. Authentication

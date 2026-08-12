@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.recorder import get_instance  # type: ignore[attr-defined]
 from homeassistant.components.recorder.models import (
     StatisticData,
@@ -809,145 +807,6 @@ async def _async_persist_statistics(
         "Recorder committed and verified %d hourly stats for %s",
         len(statistics),
         stat_id,
-    )
-    return True
-
-
-async def async_import_provisional_current_day(
-    hass: HomeAssistant,
-    coordinator: ERedesCoordinator,
-) -> bool:
-    """Populate today's E-REDES statistic from Energy Dashboard device usage.
-
-    E-REDES does not provide the current local day's load curve. Until those
-    readings arrive, the integration uses Home Assistant's configured top-level
-    individual-device consumption statistics as a provisional lower-bound
-    estimate. Entries already included in another configured statistic are
-    excluded to avoid double counting. The E-REDES statistic itself is also
-    excluded to prevent recursive feedback.
-    """
-    manager = await async_get_manager(hass)
-    preferences = manager.data
-    if not preferences:
-        return False
-
-    stat_id = statistic_id(coordinator.cpe)
-    device_stat_ids = {
-        device["stat_consumption"]
-        for device in preferences.get("device_consumption", [])
-        if not device.get("included_in_stat")
-        and device.get("stat_consumption") != stat_id
-    }
-    if not device_stat_ids:
-        _LOGGER.debug("No top-level Energy Dashboard device statistics configured")
-        return False
-
-    now_utc = datetime.now(tz=UTC)
-    today_start_utc = (
-        now_utc.astimezone(LISBON)
-        .replace(hour=0, minute=0, second=0, microsecond=0)
-        .astimezone(UTC)
-    )
-    recorder = get_instance(hass)
-    current_hour_start_utc = now_utc.replace(minute=0, second=0, microsecond=0)
-
-    device_statistics = await recorder.async_add_executor_job(
-        statistics_during_period,
-        hass,
-        today_start_utc,
-        current_hour_start_utc,
-        device_stat_ids,
-        "hour",
-        {"energy": UnitOfEnergy.KILO_WATT_HOUR},
-        {"change"},
-    )
-    current_hour_statistics = await recorder.async_add_executor_job(
-        statistics_during_period,
-        hass,
-        current_hour_start_utc,
-        now_utc,
-        device_stat_ids,
-        "5minute",
-        {"energy": UnitOfEnergy.KILO_WATT_HOUR},
-        {"change"},
-    )
-
-    hourly_changes: defaultdict[datetime, float] = defaultdict(float)
-    for rows in device_statistics.values():
-        for row in rows:
-            change = row.get("change")
-            if change is None:
-                continue
-            hour_start = datetime.fromtimestamp(row["start"], tz=UTC)
-            hourly_changes[hour_start] += float(change)
-
-    for rows in current_hour_statistics.values():
-        for row in rows:
-            change = row.get("change")
-            if change is None:
-                continue
-            hourly_changes[current_hour_start_utc] += float(change)
-
-    if not hourly_changes:
-        _LOGGER.debug("No current-day Energy Dashboard device statistics available")
-        return False
-
-    # E-REDES can lag by more than one day, so the latest cumulative row may
-    # be older than the immediately preceding 24-hour window. Query daily
-    # reductions across the supported history range: each daily row retains
-    # that day's final cumulative sum while avoiding thousands of hourly rows.
-    # Ending just before local midnight excludes every provisional row for today.
-    seed_statistics = await recorder.async_add_executor_job(
-        statistics_during_period,
-        hass,
-        today_start_utc - timedelta(days=TOTAL_HISTORY_DAYS + 1),
-        today_start_utc - timedelta(microseconds=1),
-        {stat_id},
-        "day",
-        None,
-        {"sum"},
-    )
-    seed_rows = seed_statistics.get(stat_id, [])
-    seed_sum = seed_rows[-1].get("sum") if seed_rows else None
-    if seed_sum is None:
-        _LOGGER.warning(
-            "Skipping provisional current-day energy because no prior E-REDES "
-            "cumulative statistic is available before %s",
-            today_start_utc.isoformat(),
-        )
-        return False
-    cumulative_sum = float(seed_sum)
-    _LOGGER.debug(
-        "Seeding provisional current-day energy from prior cumulative sum %.3f kWh",
-        cumulative_sum,
-    )
-
-    statistics: list[StatisticData] = []
-    for hour_start in sorted(hourly_changes):
-        hour_kwh = hourly_changes[hour_start]
-        cumulative_sum += hour_kwh
-        statistics.append(
-            StatisticData(
-                start=hour_start,
-                state=hour_kwh,
-                sum=cumulative_sum,
-            )
-        )
-
-    if not await _async_persist_statistics(
-        hass,
-        stat_id,
-        _statistics_metadata(coordinator.cpe),
-        statistics,
-    ):
-        return False
-
-    _LOGGER.debug(
-        "Updated provisional current-day energy from %d top-level Energy Dashboard "
-        "device statistic(s), %.3f kWh through %s",
-        len(device_stat_ids),
-        sum(hourly_changes.values()),
-        now_utc.isoformat(),
     )
     return True
 

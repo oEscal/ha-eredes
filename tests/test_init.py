@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -32,14 +31,9 @@ CPE = "PT0002000012345678AB"
 TOKEN = "eyJ.mock.jwt"
 
 
-async def test_provisional_tick_skips_while_statistics_import_is_running() -> None:
-    """A scheduled tick must not queue behind a long authoritative import."""
-    lock = asyncio.Lock()
-    await lock.acquire()
-    coordinator = MagicMock()
+async def test_provisional_tick_reconciles_live_tracker() -> None:
+    """The periodic fallback asks the live tracker to rebuild current-day state."""
     entry = MagicMock()
-    entry.runtime_data.statistics_import_lock = lock
-    entry.runtime_data.coordinator = coordinator
 
     with patch(
         "custom_components.eredes._async_import_provisional_data",
@@ -47,8 +41,7 @@ async def test_provisional_tick_skips_while_statistics_import_is_running() -> No
     ) as import_provisional:
         await _handle_provisional_sync(MagicMock(), entry, MagicMock())
 
-    import_provisional.assert_not_awaited()
-    lock.release()
+    import_provisional.assert_awaited_once_with(entry)
 
 
 async def test_setup_does_not_wait_for_remote_or_provisional_work(
@@ -163,7 +156,7 @@ async def test_setup_keeps_local_provisional_refresh_when_remote_auth_is_unavail
 
     coordinator.async_refresh.assert_awaited_once_with()
     coordinator.async_config_entry_first_refresh.assert_not_awaited()
-    import_provisional.assert_awaited_once_with(hass, entry, coordinator)
+    import_provisional.assert_awaited_once_with(entry)
     start_history.assert_not_called()
     track_time_interval.assert_called_once()
     assert track_time_interval.call_args.args[2] == timedelta(minutes=7)
@@ -239,7 +232,7 @@ async def test_setup_schedules_initial_jobs_and_daily_history_5am(
         provisional_job = provisional_callback(MagicMock())
         assert provisional_job is not None
         await provisional_job
-        import_provisional.assert_awaited_once_with(hass, entry, coordinator)
+        import_provisional.assert_awaited_once_with(entry)
         assert create_background_task_mock.call_count == 2
 
         daily_callback = track_time_change.call_args.args[1]
